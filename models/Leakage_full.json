@@ -1,0 +1,51 @@
+{
+  "manager_version": "3.0",
+  "registry_version": "3.0",
+  "parameter": "Leakage",
+  "feature_set": "full",
+  "model_name": null,
+  "saved_at": "2026-09-13T00:46:21.619518",
+  "model_path": "E:\\SIH26170_2.0\\models\\Leakage_full.joblib",
+  "predictor_version": "3.0",
+  "model_type": "Random Forest",
+  "features": [
+    "Leakage_0h_uA",
+    "Leakage_24h_uA",
+    "Leakage_96h_uA"
+  ],
+  "target_column": "Leakage_168h_uA",
+  "training_samples": 2000,
+  "validation_metrics": {
+    "MAE": 5.245530874999999,
+    "RMSE": 13.781424306509674,
+    "R2": 0.17646553536843068
+  },
+  "all_model_metrics": [
+    {
+      "model_name": "Linear Regression",
+      "metrics": {
+        "MAE": 6.552592928707094,
+        "RMSE": 14.935128361840325,
+        "R2": 0.032810685382356986
+      }
+    },
+    {
+      "model_name": "Random Forest",
+      "metrics": {
+        "MAE": 5.245530874999999,
+        "RMSE": 13.781424306509674,
+        "R2": 0.17646553536843068
+      }
+    },
+    {
+      "model_name": "Gradient Boosting",
+      "metrics": {
+        "MAE": 5.518530688332468,
+        "RMSE": 13.580177033047935,
+        "R2": 0.2003417286995295
+      }
+    }
+  ],
+  "selection_metric": "MAE",
+  "target_horizon_hours": 168
+}

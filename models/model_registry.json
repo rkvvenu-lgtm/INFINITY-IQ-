@@ -1,16 +1,242 @@
 {
-  "models": {
-    "IDDQ": {
-      "selected_model": "RandomForest",
-      "status": "TRAINED"
+  "registry_version": "3.0",
+  "registry_name": "SIH26170 Parameter and Model Registry",
+
+  "project": {
+    "name": "SIH26170",
+    "pipeline_version": "3.0",
+    "status": "PROTOTYPE"
+  },
+
+  "parameters": {
+    "Iddq": {
+      "enabled": true,
+      "display_name": "IDDQ",
+      "category": "ELECTRONICS",
+      "unit": "uA",
+      "direction": "HIGH",
+
+      "columns": {
+        "current": "Iddq_0h_uA",
+        "early_features": [
+          "Iddq_0h_uA",
+          "Iddq_24h_uA"
+        ],
+        "full_features": [
+          "Iddq_0h_uA",
+          "Iddq_24h_uA",
+          "Iddq_96h_uA"
+        ],
+        "target": "Iddq_168h_uA",
+        "prediction": "Predicted_Iddq_168h"
+      },
+
+      "prediction": {
+        "horizon": "168h",
+        "early_model": true,
+        "full_model": true,
+        "live_prediction": true
+      },
+
+      "engineering_limit": {
+        "type": "MAX",
+        "minimum": 0.0,
+        "warning": 40.0,
+        "maximum": 50.0
+      },
+
+      "explainability": {
+        "enabled": true,
+        "compare_with_lot": true,
+        "calculate_z_score": true,
+        "calculate_drift": true,
+        "show_prediction": true,
+        "show_limit": true
+      }
     },
+
     "Leakage": {
-      "selected_model": "RandomForest",
-      "status": "TRAINED"
+      "enabled": true,
+      "display_name": "Leakage Current",
+      "category": "ELECTRONICS",
+      "unit": "uA",
+      "direction": "HIGH",
+
+      "columns": {
+        "current": "Leakage_0h_uA",
+        "early_features": [
+          "Leakage_0h_uA",
+          "Leakage_24h_uA"
+        ],
+        "full_features": [
+          "Leakage_0h_uA",
+          "Leakage_24h_uA",
+          "Leakage_96h_uA"
+        ],
+        "target": "Leakage_168h_uA",
+        "prediction": "Predicted_Leakage_168h"
+      },
+
+      "prediction": {
+        "horizon": "168h",
+        "early_model": true,
+        "full_model": true,
+        "live_prediction": true
+      },
+
+      "engineering_limit": {
+        "type": "MAX",
+        "minimum": 0.0,
+        "warning": 40.0,
+        "maximum": 50.0
+      },
+
+      "explainability": {
+        "enabled": true,
+        "compare_with_lot": true,
+        "calculate_z_score": true,
+        "calculate_drift": true,
+        "show_prediction": true,
+        "show_limit": true
+      }
     },
+
     "Delay": {
-      "selected_model": "RandomForest",
-      "status": "TRAINED"
+      "enabled": true,
+      "display_name": "Propagation Delay",
+      "category": "ELECTRONICS",
+      "unit": "ns",
+      "direction": "HIGH",
+
+      "columns": {
+        "current": "Delay_0h_ns",
+        "early_features": [
+          "Delay_0h_ns",
+          "Delay_24h_ns"
+        ],
+        "full_features": [
+          "Delay_0h_ns",
+          "Delay_24h_ns",
+          "Delay_96h_ns"
+        ],
+        "target": "Delay_168h_ns",
+        "prediction": "Predicted_Delay_168h"
+      },
+
+      "prediction": {
+        "horizon": "168h",
+        "early_model": true,
+        "full_model": true,
+        "live_prediction": true
+      },
+
+      "engineering_limit": {
+        "type": "MAX",
+        "minimum": 0.0,
+        "warning": 24.0,
+        "maximum": 30.0
+      },
+
+      "explainability": {
+        "enabled": true,
+        "compare_with_lot": true,
+        "calculate_z_score": true,
+        "calculate_drift": true,
+        "show_prediction": true,
+        "show_limit": true
+      }
     }
+  },
+
+  "model_policy": {
+    "allowed_models": [
+      "Linear Regression",
+      "Random Forest",
+      "Gradient Boosting"
+    ],
+
+    "selection_metric": "MAE",
+    "lower_is_better": true,
+
+    "validation": {
+      "required": true,
+      "test_size": 0.20,
+      "minimum_training_samples": 10,
+      "metrics": [
+        "MAE",
+        "RMSE",
+        "R2"
+      ]
+    },
+
+    "prediction_quality": {
+      "minimum_acceptable_r2": 0.00,
+      "maximum_acceptable_mae_ratio": 0.20,
+      "low_quality_requires_review": true
+    },
+
+    "save_selected_model": true,
+    "model_directory": "models"
+  },
+
+  "anomaly_policy": {
+    "global_method": "ISOLATION_FOREST_PLUS_Z_SCORE",
+    "lot_aware": true,
+    "lot_group_columns": [
+      "Lot_ID",
+      "Component_Type"
+    ],
+    "minimum_lot_size": 5,
+    "z_score_threshold": 3.0
+  },
+
+  "decision_policy": {
+    "supported_directions": [
+      "HIGH",
+      "LOW",
+      "BOTH",
+      "UNKNOWN"
+    ],
+
+    "unknown_direction_requires_review": true,
+
+    "decision_levels": [
+      "PASS",
+      "INVESTIGATE",
+      "REJECT",
+      "REVIEW"
+    ],
+
+    "engineering_override": true
+  },
+
+  "explainability_policy": {
+    "enabled": true,
+
+    "required_fields": [
+      "current_value",
+      "lot_mean",
+      "lot_median",
+      "lot_deviation",
+      "lot_z_score",
+      "global_z_score",
+      "anomaly_risk",
+      "drift_rate",
+      "drift_percentage",
+      "predicted_168h",
+      "warning_limit",
+      "engineering_limit",
+      "prediction_quality",
+      "final_decision",
+      "decision_reason"
+    ]
+  },
+
+  "version_policy": {
+    "track_model_version": true,
+    "track_registry_version": true,
+    "track_pipeline_version": true,
+    "track_timestamp": true,
+    "track_dataset_id": true
   }
 }

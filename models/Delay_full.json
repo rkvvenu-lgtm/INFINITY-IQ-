@@ -1,0 +1,51 @@
+{
+  "manager_version": "3.0",
+  "registry_version": "3.0",
+  "parameter": "Delay",
+  "feature_set": "full",
+  "model_name": null,
+  "saved_at": "2026-09-13T00:46:24.859122",
+  "model_path": "E:\\SIH26170_2.0\\models\\Delay_full.joblib",
+  "predictor_version": "3.0",
+  "model_type": "Random Forest",
+  "features": [
+    "Delay_0h_ns",
+    "Delay_24h_ns",
+    "Delay_96h_ns"
+  ],
+  "target_column": "Delay_168h_ns",
+  "training_samples": 2000,
+  "validation_metrics": {
+    "MAE": 2.06414645,
+    "RMSE": 6.333488943038879,
+    "R2": 0.4457622834312174
+  },
+  "all_model_metrics": [
+    {
+      "model_name": "Linear Regression",
+      "metrics": {
+        "MAE": 3.6811354652119075,
+        "RMSE": 8.364390537272747,
+        "R2": 0.033329094851159535
+      }
+    },
+    {
+      "model_name": "Random Forest",
+      "metrics": {
+        "MAE": 2.06414645,
+        "RMSE": 6.333488943038879,
+        "R2": 0.4457622834312174
+      }
+    },
+    {
+      "model_name": "Gradient Boosting",
+      "metrics": {
+        "MAE": 3.023826579182979,
+        "RMSE": 7.336996496922204,
+        "R2": 0.2562162825272406
+      }
+    }
+  ],
+  "selection_metric": "MAE",
+  "target_horizon_hours": 168
+}

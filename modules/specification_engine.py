@@ -1,529 +1,767 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any, Dict, Optional
+
 import pandas as pd
 
 
 class SpecificationEngine:
     """
-    Engineering specification evaluation engine.
+    Engineering specification and limit evaluation engine.
 
-    Supports:
-    1. Actual measurement vs engineering limit
-    2. Predicted future value vs engineering limit
-    3. Component-level specification evaluation
+    Responsibilities:
+        - Load engineering specifications
+        - Support domain-based specification configuration
+        - Evaluate current measurements
+        - Evaluate predicted 168h measurements
+        - Classify PASS / WARNING / FAIL / REVIEW
+        - Handle HIGH / LOW / BOTH / UNKNOWN directions
+        - Provide engineering-limit explanations
     """
 
-    def __init__(self, specifications=None):
-        self.specifications = specifications or {}
+    ENGINE_VERSION = "3.0"
 
-    # =========================================================
-    # Generic specification evaluation
-    # =========================================================
-
-    def evaluate(self, parameter, value):
-
-        if parameter not in self.specifications:
-
-            return {
-                "status": "UNKNOWN",
-                "reason": (
-                    f"No specification available "
-                    f"for {parameter}"
-                )
-            }
-
-        spec = self.specifications[parameter]
-
-        minimum = spec.get("min")
-        maximum = spec.get("max")
-
-        warning_min = spec.get("warning_min")
-        warning_max = spec.get("warning_max")
-
-        if minimum is not None and value < minimum:
-
-            return {
-                "status": "REJECT",
-                "reason": (
-                    f"{parameter} is below "
-                    f"the minimum specification"
-                )
-            }
-
-        if maximum is not None and value > maximum:
-
-            return {
-                "status": "REJECT",
-                "reason": (
-                    f"{parameter} is above "
-                    f"the maximum specification"
-                )
-            }
-
-        if (
-            warning_min is not None
-            and value < warning_min
-        ):
-
-            return {
-                "status": "INVESTIGATE",
-                "reason": (
-                    f"{parameter} is approaching "
-                    f"the lower limit"
-                )
-            }
-
-        if (
-            warning_max is not None
-            and value > warning_max
-        ):
-
-            return {
-                "status": "INVESTIGATE",
-                "reason": (
-                    f"{parameter} is approaching "
-                    f"the upper limit"
-                )
-            }
-
-        return {
-            "status": "PASS",
-            "reason": (
-                f"{parameter} is within specification"
-            )
-        }
-
-    # =========================================================
-    # Value vs engineering limit
-    # =========================================================
-
-    def evaluate_against_limit(
+    def __init__(
         self,
-        parameter,
-        value,
-        maximum_limit,
-        warning_ratio=0.80
+        specification_path: str = "config/specifications.json",
+        project_root: Optional[str] = None,
+        domain: str = "electronics",
     ):
+        if project_root is None:
+            self.project_root = (
+                Path(__file__).resolve().parent.parent
+            )
+        else:
+            self.project_root = Path(
+                project_root
+            ).resolve()
 
-        if pd.isna(value):
-
-            return {
-                "status": "UNKNOWN",
-                "reason": (
-                    f"{parameter} value is missing"
-                )
-            }
-
-        if pd.isna(maximum_limit):
-
-            return {
-                "status": "UNKNOWN",
-                "reason": (
-                    f"No engineering limit "
-                    f"available for {parameter}"
-                )
-            }
-
-        try:
-
-            value = float(value)
-            maximum_limit = float(maximum_limit)
-
-        except (
-            ValueError,
-            TypeError
-        ):
-
-            return {
-                "status": "UNKNOWN",
-                "reason": (
-                    f"Invalid numeric value "
-                    f"for {parameter}"
-                )
-            }
-
-        if maximum_limit <= 0:
-
-            return {
-                "status": "UNKNOWN",
-                "reason": (
-                    f"Invalid engineering limit "
-                    f"for {parameter}"
-                )
-            }
-
-        if value > maximum_limit:
-
-            return {
-                "status": "REJECT",
-                "reason": (
-                    f"{parameter} exceeds the "
-                    f"engineering limit "
-                    f"({maximum_limit})"
-                )
-            }
-
-        warning_limit = (
-            warning_ratio * maximum_limit
+        self.specification_path = self._resolve_path(
+            specification_path
         )
 
-        if value >= warning_limit:
+        self.domain = str(
+            domain
+        ).strip().lower()
 
-            return {
-                "status": "INVESTIGATE",
-                "reason": (
-                    f"{parameter} is approaching "
-                    f"the engineering limit "
-                    f"({maximum_limit})"
-                )
-            }
-
-        return {
-            "status": "PASS",
-            "reason": (
-                f"{parameter} is within the "
-                f"engineering limit"
-            )
-        }
-
-    # =========================================================
-    # Predicted future value vs limit
-    # =========================================================
-
-    def evaluate_predicted_against_limit(
-        self,
-        parameter,
-        predicted_value,
-        maximum_limit,
-        warning_ratio=0.80
-    ):
-
-        if pd.isna(predicted_value):
-
-            return {
-                "status": "UNKNOWN",
-                "reason": (
-                    f"Predicted value for "
-                    f"{parameter} is unavailable"
-                )
-            }
-
-        if pd.isna(maximum_limit):
-
-            return {
-                "status": "UNKNOWN",
-                "reason": (
-                    f"No engineering limit "
-                    f"available for {parameter}"
-                )
-            }
-
-        try:
-
-            predicted_value = float(
-                predicted_value
-            )
-
-            maximum_limit = float(
-                maximum_limit
-            )
-
-        except (
-            ValueError,
-            TypeError
-        ):
-
-            return {
-                "status": "UNKNOWN",
-                "reason": (
-                    f"Invalid predicted value "
-                    f"for {parameter}"
-                )
-            }
-
-        if maximum_limit <= 0:
-
-            return {
-                "status": "UNKNOWN",
-                "reason": (
-                    f"Invalid engineering limit "
-                    f"for {parameter}"
-                )
-            }
-
-        warning_limit = (
-            warning_ratio * maximum_limit
+        self.specifications = (
+            self._load_specifications()
         )
 
-        if predicted_value > maximum_limit:
+    # ============================================================
+    # PATH / CONFIGURATION
+    # ============================================================
 
-            return {
-                "status": "REJECT",
-                "reason": (
-                    f"Predicted {parameter} at 168h "
-                    f"({predicted_value:.3f}) exceeds "
-                    f"the engineering limit "
-                    f"({maximum_limit:.3f})"
-                )
-            }
-
-        if predicted_value >= warning_limit:
-
-            return {
-                "status": "INVESTIGATE",
-                "reason": (
-                    f"Predicted {parameter} at 168h "
-                    f"({predicted_value:.3f}) is approaching "
-                    f"the engineering limit "
-                    f"({maximum_limit:.3f})"
-                )
-            }
-
-        return {
-            "status": "PASS",
-            "reason": (
-                f"Predicted {parameter} at 168h "
-                f"({predicted_value:.3f}) is within "
-                f"the engineering limit "
-                f"({maximum_limit:.3f})"
-            )
-        }
-
-    # =========================================================
-    # Actual component specification evaluation
-    # =========================================================
-
-    def evaluate_component(self, row):
-
-        evaluations = {}
-
-        parameter_mapping = {
-
-            "Iddq_168h_uA":
-                "Iddq_Max_Limit_uA",
-
-            "Leakage_168h_uA":
-                "Leakage_Max_Limit_uA",
-
-            "Delay_168h_ns":
-                "Delay_Max_Limit_ns"
-        }
-
-        for parameter, limit_column in (
-            parameter_mapping.items()
-        ):
-
-            if parameter not in row.index:
-                continue
-
-            if limit_column not in row.index:
-                continue
-
-            evaluations[parameter] = (
-                self.evaluate_against_limit(
-                    parameter,
-                    row[parameter],
-                    row[limit_column]
-                )
-            )
-
-        return evaluations
-
-    # =========================================================
-    # Predicted future component evaluation
-    # =========================================================
-
-    def evaluate_predicted_component(
+    def _resolve_path(
         self,
-        row
-    ):
+        path: str | Path,
+    ) -> Path:
 
-        evaluations = {}
+        path = Path(path)
 
-        parameter_mapping = {
+        if path.is_absolute():
+            return path
 
-            "Predicted_Iddq_168h_uA":
-                (
-                    "Iddq",
-                    "Iddq_Max_Limit_uA"
-                ),
+        return self.project_root / path
 
-            "Predicted_Leakage_168h_uA":
-                (
-                    "Leakage",
-                    "Leakage_Max_Limit_uA"
-                ),
+    def _load_specifications(
+        self,
+    ) -> Dict[str, Any]:
 
-            "Predicted_Delay_168h_ns":
-                (
-                    "Delay",
-                    "Delay_Max_Limit_ns"
-                )
-        }
+        if not self.specification_path.exists():
+            raise FileNotFoundError(
+                "Specification file not found: "
+                f"{self.specification_path}"
+            )
 
-        for predicted_column, mapping in (
-            parameter_mapping.items()
+        try:
+            with self.specification_path.open(
+                "r",
+                encoding="utf-8",
+            ) as file:
+                data = json.load(file)
+
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                "Invalid JSON in specification file."
+            ) from exc
+
+        if not isinstance(
+            data,
+            dict,
         ):
+            raise ValueError(
+                "Specification root must be a JSON object."
+            )
 
-            parameter, limit_column = mapping
+        return data
 
-            if predicted_column not in row.index:
-                continue
+    def reload(self) -> None:
+        """Reload specifications from disk."""
+        self.specifications = (
+            self._load_specifications()
+        )
 
-            if limit_column not in row.index:
-                continue
+    # ============================================================
+    # DOMAIN
+    # ============================================================
 
-            evaluations[predicted_column] = (
-                self.evaluate_predicted_against_limit(
-                    parameter,
-                    row[predicted_column],
-                    row[limit_column]
+    def set_domain(
+        self,
+        domain: str,
+    ) -> None:
+        """Change the active engineering domain."""
+        self.domain = str(
+            domain
+        ).strip().lower()
+
+    def get_domain(self) -> str:
+        """Return the active engineering domain."""
+        return self.domain
+
+    def get_domain_specifications(
+        self,
+    ) -> Dict[str, Any]:
+
+        domain_config = self.specifications.get(
+            self.domain,
+            {}
+        )
+
+        if not isinstance(
+            domain_config,
+            dict,
+        ):
+            return {}
+
+        # Electronics stores parameters directly.
+        if self.domain == "electronics":
+            return domain_config
+
+        # Other domains currently use a generic
+        # 'parameters' container.
+        parameters = domain_config.get(
+            "parameters",
+            {}
+        )
+
+        if isinstance(
+            parameters,
+            dict,
+        ):
+            return parameters
+
+        return {}
+
+    # ============================================================
+    # PARAMETER INFORMATION
+    # ============================================================
+
+    def get_parameter_spec(
+        self,
+        parameter: str,
+    ) -> Dict[str, Any]:
+
+        parameters = (
+            self.get_domain_specifications()
+        )
+
+        spec = parameters.get(
+            parameter
+        )
+
+        if spec is None:
+            raise KeyError(
+                f"No specification registered for "
+                f"parameter '{parameter}' "
+                f"in domain '{self.domain}'."
+            )
+
+        if not isinstance(
+            spec,
+            dict,
+        ):
+            raise ValueError(
+                f"Invalid specification for "
+                f"parameter '{parameter}'."
+            )
+
+        return spec.copy()
+
+    def is_registered(
+        self,
+        parameter: str,
+    ) -> bool:
+
+        return (
+            parameter
+            in self.get_domain_specifications()
+        )
+
+    def is_enabled(
+        self,
+        parameter: str,
+    ) -> bool:
+
+        if not self.is_registered(
+            parameter
+        ):
+            return False
+
+        spec = self.get_parameter_spec(
+            parameter
+        )
+
+        return bool(
+            spec.get(
+                "enabled",
+                False,
+            )
+        )
+
+    def get_enabled_parameters(
+        self,
+    ) -> list[str]:
+
+        parameters = (
+            self.get_domain_specifications()
+        )
+
+        return [
+            parameter
+            for parameter, spec
+            in parameters.items()
+            if isinstance(spec, dict)
+            and bool(
+                spec.get(
+                    "enabled",
+                    False,
                 )
             )
+        ]
 
-        return evaluations
+    def get_display_name(
+        self,
+        parameter: str,
+    ) -> str:
 
-    # =========================================================
-    # Dataset-level actual specification evaluation
-    # =========================================================
+        spec = self.get_parameter_spec(
+            parameter
+        )
 
-    def evaluate_dataset(self, data):
-
-        result = data.copy()
-
-        statuses = []
-        reasons = []
-
-        for _, row in result.iterrows():
-
-            evaluations = (
-                self.evaluate_component(row)
-            )
-
-            final_status = "PASS"
-            component_reasons = []
-
-            for (
+        return str(
+            spec.get(
+                "display_name",
                 parameter,
-                evaluation
-            ) in evaluations.items():
-
-                status = evaluation["status"]
-
-                if status == "REJECT":
-
-                    final_status = "REJECT"
-
-                elif (
-                    status == "INVESTIGATE"
-                    and final_status != "REJECT"
-                ):
-
-                    final_status = "INVESTIGATE"
-
-                if status != "PASS":
-
-                    component_reasons.append(
-                        evaluation["reason"]
-                    )
-
-            if not evaluations:
-
-                final_status = "UNKNOWN"
-
-                component_reasons.append(
-                    "No applicable engineering "
-                    "specifications found"
-                )
-
-            statuses.append(
-                final_status
             )
+        )
 
-            reasons.append(
-                "; ".join(component_reasons)
+    def get_direction(
+        self,
+        parameter: str,
+    ) -> str:
+
+        spec = self.get_parameter_spec(
+            parameter
+        )
+
+        return str(
+            spec.get(
+                "direction",
+                "UNKNOWN",
             )
+        ).upper()
 
-        result[
-            "Specification_Status"
-        ] = statuses
+    def get_unit(
+        self,
+        parameter: str,
+    ) -> str:
 
-        result[
-            "Specification_Reason"
-        ] = reasons
+        spec = self.get_parameter_spec(
+            parameter
+        )
+
+        return str(
+            spec.get(
+                "unit",
+                "",
+            )
+        )
+
+    # ============================================================
+    # LIMITS
+    # ============================================================
+
+    def get_limits(
+        self,
+        parameter: str,
+    ) -> Dict[str, Optional[float]]:
+
+        spec = self.get_parameter_spec(
+            parameter
+        )
+
+        limits = spec.get(
+            "limits",
+            {}
+        )
+
+        if not isinstance(
+            limits,
+            dict,
+        ):
+            limits = {}
+
+        return {
+            "min": self._to_float(
+                limits.get("minimum")
+            ),
+            "warning_min": None,
+            "warning_max": self._to_float(
+                limits.get("warning")
+            ),
+            "max": self._to_float(
+                limits.get("maximum")
+            ),
+        }
+
+    @staticmethod
+    def _to_float(
+        value: Any,
+    ) -> Optional[float]:
+
+        if value is None:
+            return None
+
+        try:
+            return float(value)
+
+        except (
+            TypeError,
+            ValueError,
+        ):
+            return None
+
+    # ============================================================
+    # SINGLE VALUE EVALUATION
+    # ============================================================
+
+    def evaluate_value(
+        self,
+        parameter: str,
+        value: Any,
+    ) -> Dict[str, Any]:
+        """
+        Evaluate one engineering measurement.
+        """
+
+        if not self.is_registered(
+            parameter
+        ):
+            return {
+                "parameter": parameter,
+                "value": value,
+                "status": "UNKNOWN",
+                "violation": False,
+                "warning": False,
+                "reason": (
+                    "Parameter is not registered "
+                    f"for domain '{self.domain}'."
+                ),
+                "limit_type": None,
+                "limit_value": None,
+            }
+
+        if not self.is_enabled(
+            parameter
+        ):
+            return {
+                "parameter": parameter,
+                "value": value,
+                "status": "REVIEW",
+                "violation": False,
+                "warning": False,
+                "reason": (
+                    "Parameter is disabled in "
+                    "the specification."
+                ),
+                "limit_type": None,
+                "limit_value": None,
+            }
+
+        numeric_value = self._to_float(
+            value
+        )
+
+        if numeric_value is None:
+            return {
+                "parameter": parameter,
+                "value": value,
+                "status": "INVALID",
+                "violation": True,
+                "warning": False,
+                "reason": (
+                    "Value is not numeric."
+                ),
+                "limit_type": None,
+                "limit_value": None,
+            }
+
+        limits = self.get_limits(
+            parameter
+        )
+
+        direction = self.get_direction(
+            parameter
+        )
+
+        result = {
+            "parameter": parameter,
+            "value": numeric_value,
+            "unit": self.get_unit(
+                parameter
+            ),
+            "direction": direction,
+            "status": "PASS",
+            "violation": False,
+            "warning": False,
+            "reason": (
+                "Within engineering limits."
+            ),
+            "limit_type": None,
+            "limit_value": None,
+        }
+
+        # --------------------------------------------------------
+        # HIGH
+        # --------------------------------------------------------
+
+        if direction == "HIGH":
+
+            maximum = limits["max"]
+            warning = limits["warning_max"]
+
+            if (
+                maximum is not None
+                and numeric_value > maximum
+            ):
+                result.update({
+                    "status": "FAIL",
+                    "violation": True,
+                    "reason": (
+                        "Value exceeds the maximum "
+                        "engineering limit."
+                    ),
+                    "limit_type": "maximum",
+                    "limit_value": maximum,
+                })
+
+            elif (
+                warning is not None
+                and numeric_value > warning
+            ):
+                result.update({
+                    "status": "WARNING",
+                    "warning": True,
+                    "reason": (
+                        "Value exceeds the engineering "
+                        "warning threshold."
+                    ),
+                    "limit_type": "warning",
+                    "limit_value": warning,
+                })
+
+        # --------------------------------------------------------
+        # LOW
+        # --------------------------------------------------------
+
+        elif direction == "LOW":
+
+            minimum = limits["min"]
+            warning = limits["warning_min"]
+
+            if (
+                minimum is not None
+                and numeric_value < minimum
+            ):
+                result.update({
+                    "status": "FAIL",
+                    "violation": True,
+                    "reason": (
+                        "Value is below the minimum "
+                        "engineering limit."
+                    ),
+                    "limit_type": "minimum",
+                    "limit_value": minimum,
+                })
+
+            elif (
+                warning is not None
+                and numeric_value < warning
+            ):
+                result.update({
+                    "status": "WARNING",
+                    "warning": True,
+                    "reason": (
+                        "Value is below the engineering "
+                        "warning threshold."
+                    ),
+                    "limit_type": "warning",
+                    "limit_value": warning,
+                })
+
+        # --------------------------------------------------------
+        # BOTH
+        # --------------------------------------------------------
+
+        elif direction == "BOTH":
+
+            minimum = limits["min"]
+            maximum = limits["max"]
+            warning_min = limits["warning_min"]
+            warning_max = limits["warning_max"]
+
+            if (
+                minimum is not None
+                and numeric_value < minimum
+            ):
+                result.update({
+                    "status": "FAIL",
+                    "violation": True,
+                    "reason": (
+                        "Value is below the minimum "
+                        "engineering limit."
+                    ),
+                    "limit_type": "minimum",
+                    "limit_value": minimum,
+                })
+
+            elif (
+                maximum is not None
+                and numeric_value > maximum
+            ):
+                result.update({
+                    "status": "FAIL",
+                    "violation": True,
+                    "reason": (
+                        "Value exceeds the maximum "
+                        "engineering limit."
+                    ),
+                    "limit_type": "maximum",
+                    "limit_value": maximum,
+                })
+
+            elif (
+                warning_min is not None
+                and numeric_value < warning_min
+            ):
+                result.update({
+                    "status": "WARNING",
+                    "warning": True,
+                    "reason": (
+                        "Value is below the warning "
+                        "threshold."
+                    ),
+                    "limit_type": "warning_min",
+                    "limit_value": warning_min,
+                })
+
+            elif (
+                warning_max is not None
+                and numeric_value > warning_max
+            ):
+                result.update({
+                    "status": "WARNING",
+                    "warning": True,
+                    "reason": (
+                        "Value exceeds the warning "
+                        "threshold."
+                    ),
+                    "limit_type": "warning_max",
+                    "limit_value": warning_max,
+                })
+
+        # --------------------------------------------------------
+        # UNKNOWN
+        # --------------------------------------------------------
+
+        else:
+
+            result.update({
+                "status": "REVIEW",
+                "reason": (
+                    "Engineering direction is UNKNOWN. "
+                    "Manual engineering review is required."
+                ),
+            })
 
         return result
 
-    # =========================================================
-    # Dataset-level predicted specification evaluation
-    # =========================================================
+    # ============================================================
+    # DATAFRAME EVALUATION
+    # ============================================================
 
-    def evaluate_predicted_dataset(
+    def evaluate_dataframe(
         self,
-        data
-    ):
+        data: pd.DataFrame,
+        parameter: str,
+        column: str,
+        prefix: str = "",
+    ) -> pd.DataFrame:
 
-        result = data.copy()
-
-        statuses = []
-        reasons = []
-
-        for _, row in result.iterrows():
-
-            evaluations = (
-                self.evaluate_predicted_component(
-                    row
-                )
+        if column not in data.columns:
+            raise ValueError(
+                f"Column '{column}' not found "
+                "in dataframe."
             )
 
-            final_status = "PASS"
-            component_reasons = []
-
-            for (
+        results = data[column].apply(
+            lambda value: self.evaluate_value(
                 parameter,
-                evaluation
-            ) in evaluations.items():
+                value,
+            )
+        )
 
-                status = evaluation["status"]
+        output = data.copy()
 
-                if status == "REJECT":
+        output[
+            f"{prefix}{parameter}_Spec_Status"
+        ] = results.apply(
+            lambda item: item["status"]
+        )
 
-                    final_status = "REJECT"
+        output[
+            f"{prefix}{parameter}_Spec_Violation"
+        ] = results.apply(
+            lambda item: item["violation"]
+        )
 
-                elif (
-                    status == "INVESTIGATE"
-                    and final_status != "REJECT"
-                ):
+        output[
+            f"{prefix}{parameter}_Spec_Warning"
+        ] = results.apply(
+            lambda item: item["warning"]
+        )
 
-                    final_status = "INVESTIGATE"
+        output[
+            f"{prefix}{parameter}_Spec_Reason"
+        ] = results.apply(
+            lambda item: item["reason"]
+        )
 
-                if status != "PASS":
+        output[
+            f"{prefix}{parameter}_Spec_Limit_Type"
+        ] = results.apply(
+            lambda item: item["limit_type"]
+        )
 
-                    component_reasons.append(
-                        evaluation["reason"]
-                    )
+        output[
+            f"{prefix}{parameter}_Spec_Limit_Value"
+        ] = results.apply(
+            lambda item: item["limit_value"]
+        )
 
-            if not evaluations:
+        return output
 
-                final_status = "UNKNOWN"
+    # ============================================================
+    # CURRENT / PREDICTED
+    # ============================================================
 
-                component_reasons.append(
-                    "No predicted values available "
-                    "for specification evaluation"
+    def evaluate_current(
+        self,
+        data: pd.DataFrame,
+        parameter: str,
+        column: str,
+    ) -> pd.DataFrame:
+
+        return self.evaluate_dataframe(
+            data=data,
+            parameter=parameter,
+            column=column,
+            prefix="Current_",
+        )
+
+    def evaluate_predicted(
+        self,
+        data: pd.DataFrame,
+        parameter: str,
+        prediction_column: str,
+    ) -> pd.DataFrame:
+
+        return self.evaluate_dataframe(
+            data=data,
+            parameter=parameter,
+            column=prediction_column,
+            prefix="Predicted_",
+        )
+
+    # ============================================================
+    # SUMMARY
+    # ============================================================
+
+    def summarize(
+        self,
+        data: pd.DataFrame,
+        parameter: str,
+        status_column: str,
+    ) -> Dict[str, Any]:
+
+        if status_column not in data.columns:
+            raise ValueError(
+                f"Status column '{status_column}' "
+                "not found."
+            )
+
+        statuses = (
+            data[status_column]
+            .astype(str)
+            .str.upper()
+        )
+
+        return {
+            "parameter": parameter,
+            "total": int(len(statuses)),
+            "pass": int(
+                (statuses == "PASS").sum()
+            ),
+            "warning": int(
+                (statuses == "WARNING").sum()
+            ),
+            "fail": int(
+                (statuses == "FAIL").sum()
+            ),
+            "invalid": int(
+                (statuses == "INVALID").sum()
+            ),
+            "review": int(
+                (statuses == "REVIEW").sum()
+            ),
+        }
+
+    # ============================================================
+    # ENGINE INFORMATION
+    # ============================================================
+
+    def get_engine_info(
+        self,
+    ) -> Dict[str, Any]:
+
+        return {
+            "engine_version": (
+                self.ENGINE_VERSION
+            ),
+            "specification_version": (
+                self.specifications.get(
+                    "specification_version",
+                    "unknown",
                 )
-
-            statuses.append(
-                final_status
-            )
-
-            reasons.append(
-                "; ".join(component_reasons)
-            )
-
-        result[
-            "Predicted_Specification_Status"
-        ] = statuses
-
-        result[
-            "Predicted_Specification_Reason"
-        ] = reasons
-
-        return result
+            ),
+            "specification_path": str(
+                self.specification_path
+            ),
+            "domain": self.domain,
+            "parameters": (
+                self.get_enabled_parameters()
+            ),
+        }

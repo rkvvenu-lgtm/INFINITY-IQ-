@@ -1,30 +1,111 @@
 {
-    "electronics": {
-        "Iddq_168h_uA": {
-            "min": 0,
-            "max": 50,
-            "warning_max": 40,
-            "unit": "uA"
-        },
+  "specification_version": "3.0",
 
-        "Leakage_168h_uA": {
-            "min": 0,
-            "max": 50,
-            "warning_max": 40,
-            "unit": "uA"
-        },
+  "metadata": {
+    "status": "PROTOTYPE",
+    "description": "Engineering screening limits used by the SIH26170 prototype.",
+    "important_note": "These values are demonstration/prototype limits and must be replaced or approved with qualified engineering specifications before production use."
+  },
 
-        "Delay_168h_ns": {
-            "min": 0,
-            "max": 30,
-            "warning_max": 24,
-            "unit": "ns"
-        }
+  "electronics": {
+    "Iddq": {
+      "display_name": "IDDQ",
+      "unit": "uA",
+      "direction": "HIGH",
+      "limits": {
+        "minimum": 0.0,
+        "warning": 40.0,
+        "maximum": 50.0
+      },
+      "enabled": true
     },
 
-    "mechanical": {},
+    "Leakage": {
+      "display_name": "Leakage Current",
+      "unit": "uA",
+      "direction": "HIGH",
+      "limits": {
+        "minimum": 0.0,
+        "warning": 40.0,
+        "maximum": 50.0
+      },
+      "enabled": true
+    },
 
-    "medical": {},
+    "Delay": {
+      "display_name": "Propagation Delay",
+      "unit": "ns",
+      "direction": "HIGH",
+      "limits": {
+        "minimum": 0.0,
+        "warning": 24.0,
+        "maximum": 30.0
+      },
+      "enabled": true
+    }
+  },
 
-    "aerospace": {}
+  "mechanical": {
+    "parameters": {},
+    "status": "GENERIC"
+  },
+
+  "automotive": {
+    "parameters": {},
+    "status": "GENERIC"
+  },
+
+  "manufacturing": {
+    "parameters": {},
+    "status": "GENERIC"
+  },
+
+  "energy": {
+    "parameters": {},
+    "status": "GENERIC"
+  },
+
+  "aerospace": {
+    "parameters": {},
+    "status": "GENERIC"
+  },
+
+  "medical_equipment": {
+    "parameters": {},
+    "status": "GENERIC"
+  },
+
+  "general_unknown": {
+    "parameters": {},
+    "status": "NO_ENGINEERING_LIMITS"
+  },
+
+  "decision_policy": {
+    "supported_directions": [
+      "HIGH",
+      "LOW",
+      "BOTH",
+      "UNKNOWN"
+    ],
+
+    "high_direction": {
+      "warning_when": "VALUE_ABOVE_WARNING",
+      "reject_when": "VALUE_ABOVE_MAXIMUM"
+    },
+
+    "low_direction": {
+      "warning_when": "VALUE_BELOW_WARNING",
+      "reject_when": "VALUE_BELOW_MINIMUM"
+    },
+
+    "both_direction": {
+      "warning_when": "VALUE_OUTSIDE_WARNING_RANGE",
+      "reject_when": "VALUE_OUTSIDE_ALLOWED_RANGE"
+    },
+
+    "unknown_direction": {
+      "action": "REVIEW",
+      "allow_automatic_rejection": false
+    }
+  }
 }

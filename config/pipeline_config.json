@@ -1,104 +1,416 @@
 {
-    "project": {
-        "name": "AI-Assisted Adaptive Component Screening Platform",
-        "version": "2.0"
-    },
+  "project": {
+    "name": "SIH26170",
+    "version": "3.0",
+    "pipeline_version": "3.0",
+    "description": "AI-assisted predictive screening and risk assessment platform for electronics and multiple engineering domains.",
+    "environment": "prototype"
+  },
 
-    "default_domain": "electronics",
-
-    "data": {
-        "component_id_column": "Component_ID",
-        "lot_id_column": "Lot_ID",
-        "component_type_column": "Component_Type",
-        "temperature_column": "Temperature_C",
-
-        "required_columns": [
-            "Component_ID",
-            "Lot_ID",
-            "Component_Type",
-            "Temperature_C",
-            "Iddq_0h_uA",
-            "Iddq_24h_uA",
-            "Iddq_96h_uA",
-            "Iddq_168h_uA",
-            "Leakage_0h_uA",
-            "Leakage_24h_uA",
-            "Leakage_96h_uA",
-            "Leakage_168h_uA",
-            "Delay_0h_ns",
-            "Delay_24h_ns",
-            "Delay_96h_ns",
-            "Delay_168h_ns"
-        ]
-    },
-
-    "anomaly_detection": {
-        "features": [
-            "Iddq_0h_uA",
-            "Iddq_24h_uA",
-            "Iddq_96h_uA",
-            "Leakage_0h_uA",
-            "Leakage_24h_uA",
-            "Leakage_96h_uA",
-            "Delay_0h_ns",
-            "Delay_24h_ns",
-            "Delay_96h_ns"
-        ],
-        "contamination": 0.15,
-        "n_estimators": 200,
-        "z_threshold": 3.0
-    },
-
-    "drift_prediction": {
-        "prediction_horizon": "168h",
-        "warning_threshold": 0.20,
-        "reject_threshold": 0.40,
-        "test_size": 0.20,
-        "random_state": 42,
-
-        "parameters": {
-            "IDDQ": {
-                "features": [
-                    "Iddq_0h_uA",
-                    "Iddq_24h_uA",
-                    "Iddq_96h_uA"
-                ],
-                "target": "Iddq_168h_uA",
-                "current": "Iddq_96h_uA"
-            },
-
-            "Leakage": {
-                "features": [
-                    "Leakage_0h_uA",
-                    "Leakage_24h_uA",
-                    "Leakage_96h_uA"
-                ],
-                "target": "Leakage_168h_uA",
-                "current": "Leakage_96h_uA"
-            },
-
-            "Delay": {
-                "features": [
-                    "Delay_0h_ns",
-                    "Delay_24h_ns",
-                    "Delay_96h_ns"
-                ],
-                "target": "Delay_168h_ns",
-                "current": "Delay_96h_ns"
-            }
-        }
-    },
-
-    "risk_fusion": {
-        "anomaly_weight": 0.50,
-        "drift_weight": 0.50,
-        "investigate_threshold": 0.25,
-        "reject_threshold": 0.70
-    },
-
-    "decision_levels": {
-        "pass": "PASS",
-        "investigate": "INVESTIGATE",
-        "reject": "REJECT"
+  "operating_modes": {
+    "default_mode": "AUTO",
+    "allowed_modes": [
+      "AUTO",
+      "TRAINING_EVALUATION",
+      "LIVE_FUTURE_SCREENING"
+    ],
+    "live_prediction": {
+      "minimum_required_stage": "24h",
+      "optional_stage": "96h",
+      "prediction_target": "168h",
+      "allow_missing_96h": true,
+      "actual_future_value_required": false
     }
+  },
+
+  "domain_detection": {
+    "enabled": true,
+    "default_domain": "GENERAL_UNKNOWN",
+    "supported_domains": [
+      "ELECTRONICS",
+      "MECHANICAL",
+      "AUTOMOTIVE",
+      "MANUFACTURING",
+      "ENERGY",
+      "AEROSPACE",
+      "MEDICAL_EQUIPMENT",
+      "GENERAL_UNKNOWN"
+    ],
+    "minimum_confidence": 0.60,
+    "specialized_pipeline_domains": [
+      "ELECTRONICS"
+    ]
+  },
+
+  "data_validation": {
+    "enabled": true,
+    "allow_extra_columns": true,
+    "allow_missing_optional_columns": true,
+    "reject_empty_dataset": true,
+    "reject_duplicate_rows": false,
+    "minimum_rows_for_analysis": 1,
+    "minimum_rows_for_training": 10,
+    "missing_value_policy": "WARN",
+    "invalid_numeric_policy": "WARN",
+    "generate_quality_report": true,
+    "quality_columns": [
+      "Data_Quality_Status",
+      "Data_Quality_Warnings"
+    ]
+  },
+
+  "preprocessing": {
+    "enabled": true,
+    "numeric_conversion": true,
+    "coerce_invalid_numeric": true,
+    "preserve_original_columns": true,
+    "remove_empty_columns": false,
+    "scaling": {
+      "enabled": true,
+      "method": "STANDARD_SCALER"
+    }
+  },
+
+  "parameter_intelligence": {
+    "enabled": true,
+    "registry_file": "models/model_registry.json",
+    "supported_directions": [
+      "HIGH",
+      "LOW",
+      "BOTH",
+      "UNKNOWN"
+    ],
+    "unknown_direction_requires_review": true,
+    "unregistered_parameter_policy": "ANALYZE_WITHOUT_ENGINEERING_DECISION"
+  },
+
+  "anomaly_detection": {
+    "enabled": true,
+
+    "model": {
+      "algorithm": "ISOLATION_FOREST",
+      "n_estimators": 200,
+      "contamination": 0.15,
+      "random_state": 42
+    },
+
+    "global_statistics": {
+      "enabled": true,
+      "method": "Z_SCORE",
+      "threshold": 3.0
+    },
+
+    "lot_aware": {
+      "enabled": true,
+      "group_columns": [
+        "Lot_ID",
+        "Component_Type"
+      ],
+      "minimum_group_size": 5,
+      "z_score_threshold": 3.0,
+      "fallback_to_global_analysis": true
+    },
+
+    "risk_weights": {
+      "isolation_forest": 0.50,
+      "global_statistical": 0.25,
+      "lot_relative": 0.25
+    },
+
+    "risk_thresholds": {
+      "low": 0.25,
+      "medium": 0.50,
+      "high": 0.70,
+      "critical": 0.85
+    },
+
+    "generate_explanation": true
+  },
+
+  "drift_prediction": {
+    "enabled": true,
+
+    "prediction_target": {
+      "stage": "168h",
+      "future_value_required_in_live_mode": false
+    },
+
+    "feature_sets": {
+      "early": [
+        "0h",
+        "24h"
+      ],
+      "full": [
+        "0h",
+        "24h",
+        "96h"
+      ]
+    },
+
+    "model_candidates": [
+      "Linear Regression",
+      "Random Forest",
+      "Gradient Boosting"
+    ],
+
+    "model_selection": {
+      "enabled": true,
+      "metric": "MAE",
+      "lower_is_better": true,
+      "validation_required": true
+    },
+
+    "validation": {
+      "test_size": 0.20,
+      "random_state": 42,
+      "minimum_training_samples": 10,
+      "metrics": [
+        "MAE",
+        "RMSE",
+        "R2"
+      ]
+    },
+
+    "prediction_quality": {
+      "minimum_acceptable_r2": 0.00,
+      "maximum_acceptable_mae_ratio": 0.20,
+      "low_confidence_requires_review": true
+    },
+
+    "parameters": {
+      "Iddq": {
+        "enabled": true,
+        "features": [
+          "Iddq_0h_uA",
+          "Iddq_24h_uA",
+          "Iddq_96h_uA"
+        ],
+        "early_features": [
+          "Iddq_0h_uA",
+          "Iddq_24h_uA"
+        ],
+        "target": "Iddq_168h_uA",
+        "prediction": "Predicted_Iddq_168h",
+        "current": "Iddq_0h_uA",
+        "direction": "HIGH",
+        "unit": "uA"
+      },
+
+      "Leakage": {
+        "enabled": true,
+        "features": [
+          "Leakage_0h_uA",
+          "Leakage_24h_uA",
+          "Leakage_96h_uA"
+        ],
+        "early_features": [
+          "Leakage_0h_uA",
+          "Leakage_24h_uA"
+        ],
+        "target": "Leakage_168h_uA",
+        "prediction": "Predicted_Leakage_168h",
+        "current": "Leakage_0h_uA",
+        "direction": "HIGH",
+        "unit": "uA"
+      },
+
+      "Delay": {
+        "enabled": true,
+        "features": [
+          "Delay_0h_ns",
+          "Delay_24h_ns",
+          "Delay_96h_ns"
+        ],
+        "early_features": [
+          "Delay_0h_ns",
+          "Delay_24h_ns"
+        ],
+        "target": "Delay_168h_ns",
+        "prediction": "Predicted_Delay_168h",
+        "current": "Delay_0h_ns",
+        "direction": "HIGH",
+        "unit": "ns"
+      }
+    },
+
+    "model_storage": {
+      "enabled": true,
+      "directory": "models",
+      "registry_file": "models/model_registry.json",
+      "version": "drift_predictor_v3"
+    },
+
+    "generate_prediction_explanation": true
+  },
+
+  "specification_engine": {
+    "enabled": true,
+    "specification_file": "config/specifications.json",
+
+    "evaluation": {
+      "current_value_check": true,
+      "predicted_value_check": true,
+      "warning_limit_check": true,
+      "engineering_limit_check": true
+    },
+
+    "status_labels": {
+      "pass": "PASS",
+      "warning": "INVESTIGATE",
+      "reject": "REJECT",
+      "unknown": "REVIEW"
+    },
+
+    "unknown_direction_policy": "REVIEW"
+  },
+
+  "risk_fusion": {
+    "enabled": true,
+
+    "weights": {
+      "anomaly": 0.50,
+      "drift": 0.50
+    },
+
+    "thresholds": {
+      "investigate": 0.25,
+      "reject": 0.70
+    },
+
+    "risk_levels": {
+      "low": 0.25,
+      "medium": 0.50,
+      "high": 0.70,
+      "critical": 0.85
+    }
+  },
+
+  "decision": {
+    "enabled": true,
+
+    "labels": {
+      "pass": "PASS",
+      "investigate": "INVESTIGATE",
+      "reject": "REJECT",
+      "review": "REVIEW"
+    },
+
+    "engineering_override": true,
+
+    "override_rules": {
+      "specification_reject_overrides_ai": true,
+      "predicted_limit_violation_overrides_ai": true,
+      "high_risk_requires_investigation": true,
+      "low_prediction_quality_requires_review": true,
+      "unknown_direction_requires_review": true,
+      "poor_data_quality_requires_review": true
+    }
+  },
+
+  "explainability": {
+    "enabled": true,
+    "version": "explainability_v2",
+
+    "include": [
+      "current_value",
+      "lot_mean",
+      "lot_median",
+      "lot_deviation",
+      "lot_z_score",
+      "global_z_score",
+      "anomaly_risk",
+      "anomaly_contribution",
+      "drift_rate",
+      "drift_percentage",
+      "predicted_168h",
+      "warning_limit",
+      "engineering_limit",
+      "specification_status",
+      "prediction_quality",
+      "final_decision",
+      "decision_reason"
+    ],
+
+    "generate_human_readable_reason": true,
+    "generate_numerical_reason": true,
+    "generate_component_reason": true
+  },
+
+  "reporting": {
+    "enabled": true,
+    "save_results": true,
+    "save_model_metrics": true,
+    "save_data_quality_report": true,
+    "save_explainability": true,
+
+    "output_directory": "results",
+
+    "files": {
+      "screening_results": "final_screening_results.csv",
+      "model_metrics": "model_metrics.csv",
+      "data_quality": "data_quality_report.csv",
+      "component_intelligence": "component_intelligence.csv"
+    },
+
+    "include_metadata": true,
+
+    "metadata": [
+      "pipeline_version",
+      "pipeline_mode",
+      "dataset_id",
+      "run_timestamp",
+      "domain",
+      "model_version",
+      "registry_version",
+      "specification_version"
+    ]
+  },
+
+  "audit": {
+    "enabled": true,
+    "record_decision": true,
+    "record_reason": true,
+    "record_model_version": true,
+    "record_configuration_version": true,
+    "record_timestamp": true,
+    "record_engineering_override": true
+  },
+
+  "ui": {
+    "enabled": true,
+
+    "navigation": [
+      "Home",
+      "Upload Data",
+      "AI Screening",
+      "Results",
+      "Component Intelligence",
+      "AI Intelligence",
+      "Reports"
+    ],
+
+    "show_domain_detection": true,
+    "show_mode_selection": true,
+    "show_data_quality": true,
+    "show_prediction_metrics": true,
+    "show_explainability": true,
+    "show_component_intelligence": true,
+    "show_engineering_decision": true,
+    "show_model_version": true
+  },
+
+  "demo": {
+    "enabled": true,
+
+    "highlight_killer_case": true,
+
+    "killer_case": {
+      "description": "Identify components that are currently within engineering specification but show abnormal lot behaviour or predicted future degradation.",
+      "show_current_status": true,
+      "show_lot_deviation": true,
+      "show_future_prediction": true,
+      "show_final_decision": true,
+      "show_reason": true
+    }
+  }
 }

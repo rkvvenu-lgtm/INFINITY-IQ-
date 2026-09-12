@@ -1,44 +1,125 @@
-from pathlib import Path
-from io import BytesIO
-import re
+"""
+SIH26170
+AI-Driven Burn-In Screening & Latent Defect Detection
 
-import numpy as np
+Phase 3 - Final User Application
+
+UI architecture:
+    Home
+    Upload Data
+    Screening
+    Results
+    Investigation
+    Reports
+
+This application consumes the locked Phase 1, Phase 2 and Phase 3 application modules.
+It does not modify the AI core.
+"""
+
+from __future__ import annotations
+
+import io
+from datetime import datetime
+from typing import Any, Dict, Optional
+
 import pandas as pd
+import plotly.express as px
 import streamlit as st
 
-from sklearn.ensemble import IsolationForest
-from sklearn.preprocessing import StandardScaler
+from main import SIH26170Engine
+from modules.component_intelligence import ComponentIntelligence
+from modules.data_quality_intelligence import DataQualityIntelligence
+from modules.final_ui_integration import FinalUIIntegration
+from modules.universal_screening_engine import UniversalScreeningEngine
 
 
-# ============================================================
+# ================================================================
 # PAGE CONFIGURATION
-# ============================================================
+# ================================================================
 
 st.set_page_config(
-    page_title="AI-Assisted Adaptive Component Screening",
+    page_title="SIH26170 | Burn-In AI Screening",
     page_icon="🔬",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
 
-# ============================================================
+# ================================================================
+# CUSTOM UI STYLE
+# ================================================================
+
+st.markdown(
+    """
+    <style>
+
+    .stApp {
+        background-color: #f5f7fb;
+    }
+
+    .main-title {
+        font-size: 36px;
+        font-weight: 750;
+        color: #172033;
+        margin-bottom: 4px;
+    }
+
+    .subtitle {
+        font-size: 16px;
+        color: #667085;
+        margin-bottom: 22px;
+    }
+
+    .section-title {
+        font-size: 24px;
+        font-weight: 700;
+        color: #172033;
+        margin-top: 20px;
+        margin-bottom: 12px;
+    }
+
+    .info-box {
+        padding: 18px;
+        border-radius: 12px;
+        background-color: #eaf2ff;
+        border-left: 5px solid #2563eb;
+        color: #172033;
+    }
+
+    .metric-card {
+        padding: 15px;
+        border-radius: 12px;
+        background-color: white;
+        border: 1px solid #e4e7ec;
+        box-shadow: 0px 2px 8px rgba(0,0,0,0.04);
+    }
+
+    .footer {
+        text-align: center;
+        color: #667085;
+        font-size: 13px;
+        margin-top: 40px;
+        padding-bottom: 20px;
+    }
+
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+
+# ================================================================
 # SESSION STATE
-# ============================================================
+# ================================================================
 
 DEFAULT_STATE = {
     "uploaded_data": None,
     "screening_result": None,
-    "model_metrics": None,
-    "analysis_mode": None,
-    "domain": None,
-    "domain_confidence": None,
-    "domain_reason": None,
-    "component_column": None,
-    "parameter_columns": [],
+    "phase1_result": None,
+    "quality_result": None,
+    "domain_result": None,
+    "component_result": None,
     "screening_done": False,
-    "uploaded_filename": None,
-    "domain_selection": "Auto Detect",
 }
 
 for key, value in DEFAULT_STATE.items():
@@ -46,2206 +127,2327 @@ for key, value in DEFAULT_STATE.items():
         st.session_state[key] = value
 
 
-# ============================================================
-# SAFE HELPERS
-# ============================================================
+# ================================================================
+# ENGINE FACTORIES
+# ================================================================
 
-def safe_number(value, default=0.0):
-    try:
-        number = float(value)
-        if np.isfinite(number):
-            return number
-    except (TypeError, ValueError):
-        pass
-    return default
+@st.cache_resource
+def get_phase1_engine() -> SIH26170Engine:
+    return SIH26170Engine()
 
 
-def percentage(value):
-    return f"{safe_number(value) * 100:.1f}%"
+@st.cache_resource
+def get_universal_engine() -> UniversalScreeningEngine:
+    return UniversalScreeningEngine()
 
 
-def normalize_columns(data):
-    """
-    Standardize column names without destroying their meaning.
-    """
-    data = data.copy()
-
-    cleaned = []
-
-    for column in data.columns:
-        name = str(column).strip()
-        name = re.sub(r"\s+", "_", name)
-        name = re.sub(r"[^A-Za-z0-9_]+", "_", name)
-        name = re.sub(r"_+", "_", name)
-        name = name.strip("_")
-
-        cleaned.append(name)
-
-    data.columns = cleaned
-    return data
+@st.cache_resource
+def get_quality_engine() -> DataQualityIntelligence:
+    return DataQualityIntelligence()
 
 
-def is_identifier_column(column_name):
-    """
-    Identify columns that are probably identifiers rather than measurements.
-    """
-    name = str(column_name).strip().lower()
+@st.cache_resource
+def get_component_engine() -> ComponentIntelligence:
+    return ComponentIntelligence()
 
-    exact_identifier_names = {
-        "id",
-        "component_id",
-        "device_id",
-        "unit_id",
-        "asset_id",
-        "equipment_id",
-        "machine_id",
-        "part_id",
-        "sample_id",
-        "serial_number",
-        "serial_no",
-        "lot_id",
-        "batch_id",
-        "record_id",
-    }
 
-    if name in exact_identifier_names:
-        return True
+@st.cache_resource
+def get_final_ui_engine() -> FinalUIIntegration:
+    return FinalUIIntegration()
 
-    identifier_patterns = [
-        r"^id$",
-        r".*_id$",
-        r"^id_.*",
-        r".*_number$",
-        r".*_no$",
-        r"^serial.*",
-        r"^lot.*",
-        r"^batch.*",
+
+# ================================================================
+# GENERAL HELPERS
+# ================================================================
+
+def load_uploaded_file(uploaded_file: Any) -> pd.DataFrame:
+
+    filename = str(
+        uploaded_file.name
+    ).lower()
+
+    if filename.endswith(".csv"):
+        return pd.read_csv(uploaded_file)
+
+    if filename.endswith(".xlsx"):
+        return pd.read_excel(uploaded_file)
+
+    if filename.endswith(".xls"):
+        return pd.read_excel(uploaded_file)
+
+    raise ValueError(
+        "Only CSV, XLSX and XLS files are supported."
+    )
+
+
+def find_decision_column(
+    result: pd.DataFrame,
+) -> Optional[str]:
+
+    candidates = [
+        "Risk_Decision",
+        "Final_Decision",
+        "Decision",
     ]
 
-    return any(re.match(pattern, name) for pattern in identifier_patterns)
-
-
-def is_non_measurement_column(column_name):
-    """
-    Identify common non-measurement columns.
-    """
-    name = str(column_name).strip().lower()
-
-    if is_identifier_column(name):
-        return True
-
-    non_measurement_keywords = [
-        "name",
-        "type",
-        "category",
-        "class",
-        "label",
-        "status",
-        "decision",
-        "description",
-        "comment",
-        "remarks",
-        "date",
-        "datetime",
-        "timestamp",
-        "time",
-    ]
-
-    return any(keyword == name or name.startswith(keyword + "_")
-               for keyword in non_measurement_keywords)
-
-
-def find_component_column(data):
-    """
-    Automatically find the most likely component/device identifier.
-    """
-    preferred = [
-        "Component_ID",
-        "Device_ID",
-        "Unit_ID",
-        "Asset_ID",
-        "Equipment_ID",
-        "Machine_ID",
-        "Part_ID",
-        "Sample_ID",
-        "Serial_Number",
-        "Serial_No",
-        "Lot_ID",
-        "Batch_ID",
-    ]
-
-    for column in preferred:
-        if column in data.columns:
-            return column
-
-    for column in data.columns:
-        if is_identifier_column(column):
+    for column in candidates:
+        if column in result.columns:
             return column
 
     return None
 
 
-def find_numeric_parameters(data):
-    """
-    Find numeric measurement columns while excluding obvious identifiers.
-    """
-    parameters = []
+def find_risk_column(
+    result: pd.DataFrame,
+) -> Optional[str]:
 
-    for column in data.columns:
-        if is_non_measurement_column(column):
-            continue
-
-        numeric_values = pd.to_numeric(data[column], errors="coerce")
-
-        if numeric_values.notna().sum() < max(5, int(len(data) * 0.05)):
-            continue
-
-        unique_count = numeric_values.nunique(dropna=True)
-
-        if unique_count <= 1:
-            continue
-
-        parameters.append(column)
-
-    return parameters
-
-
-# ============================================================
-# ELECTRONICS SCHEMA DETECTION
-# ============================================================
-
-def detect_electronics_v2_schema(data):
-    required_columns = {
-        "Component_ID",
-        "Lot_ID",
-        "Component_Type",
-        "Temperature_C",
-        "Iddq_0h_uA",
-        "Iddq_24h_uA",
-        "Iddq_96h_uA",
-        "Iddq_168h_uA",
-        "Leakage_0h_uA",
-        "Leakage_24h_uA",
-        "Leakage_96h_uA",
-        "Leakage_168h_uA",
-        "Delay_0h_ns",
-        "Delay_24h_ns",
-        "Delay_96h_ns",
-        "Delay_168h_ns",
-        "Iddq_Max_Limit_uA",
-        "Leakage_Max_Limit_uA",
-        "Delay_Max_Limit_ns",
-    }
-
-    return required_columns.issubset(set(data.columns))
-
-
-# ============================================================
-# DOMAIN DETECTION
-# ============================================================
-
-DOMAIN_SIGNATURES = {
-    "Electronics": [
-        "iddq",
-        "leakage",
-        "delay",
-        "voltage",
-        "current",
-        "frequency",
-        "power",
-        "capacitance",
-        "resistance",
-        "temperature",
-        "clock",
-        "jitter",
-        "rise_time",
-        "fall_time",
-        "transistor",
-        "gate",
-        "signal",
-    ],
-
-    "Mechanical": [
-        "vibration",
-        "rpm",
-        "torque",
-        "pressure",
-        "force",
-        "stress",
-        "strain",
-        "displacement",
-        "velocity",
-        "acceleration",
-        "bearing",
-        "shaft",
-        "load",
-        "wear",
-        "friction",
-    ],
-
-    "Automotive": [
-        "engine",
-        "rpm",
-        "torque",
-        "brake",
-        "vehicle",
-        "speed",
-        "fuel",
-        "coolant",
-        "oil",
-        "throttle",
-        "gear",
-        "wheel",
-        "tire",
-        "battery",
-        "motor",
-        "temperature",
-    ],
-
-    "Manufacturing": [
-        "production",
-        "cycle",
-        "machine",
-        "tool",
-        "defect",
-        "yield",
-        "scrap",
-        "quality",
-        "process",
-        "line",
-        "batch",
-        "pressure",
-        "temperature",
-        "flow",
-        "speed",
-    ],
-
-    "Energy": [
-        "energy",
-        "power",
-        "voltage",
-        "current",
-        "frequency",
-        "grid",
-        "load",
-        "transformer",
-        "generator",
-        "solar",
-        "wind",
-        "battery",
-        "soc",
-        "state_of_charge",
-    ],
-
-    "Aerospace": [
-        "altitude",
-        "airspeed",
-        "flight",
-        "engine",
-        "fuel",
-        "pressure",
-        "temperature",
-        "vibration",
-        "acceleration",
-        "pitch",
-        "roll",
-        "yaw",
-        "thrust",
-    ],
-
-    "Medical Equipment": [
-        "spo2",
-        "ecg",
-        "heart_rate",
-        "blood_pressure",
-        "respiratory",
-        "oxygen",
-        "pulse",
-        "infusion",
-        "pump",
-        "flow",
-        "pressure",
-        "temperature",
-    ],
-}
-
-
-def calculate_domain_scores(data):
-    """
-    Calculate domain evidence from column names.
-
-    This is intentionally transparent:
-    domain detection is based on measurable column-name evidence,
-    not an unsupported black-box claim.
-    """
-
-    normalized_columns = [
-        str(column).lower().replace("-", "_").replace(" ", "_")
-        for column in data.columns
+    candidates = [
+        "Overall_Risk_Percentage",
+        "Overall_Risk_Score",
+        "Risk_Score",
     ]
 
-    scores = {}
+    for column in candidates:
+        if column in result.columns:
+            return column
 
-    for domain, keywords in DOMAIN_SIGNATURES.items():
-        score = 0
-        matched = []
-
-        for column in normalized_columns:
-            for keyword in keywords:
-                keyword = keyword.lower()
-
-                if keyword in column:
-                    score += 1
-                    matched.append(column)
-                    break
-
-        scores[domain] = {
-            "score": score,
-            "matched_columns": sorted(set(matched)),
-        }
-
-    return scores
+    return None
 
 
-def detect_domain(data):
-    """
-    Automatically detect the most likely application domain.
-    """
+def get_decision_series(
+    result: pd.DataFrame,
+) -> pd.Series:
 
-    # Strong deterministic detection for the current specialized pipeline.
-    if detect_electronics_v2_schema(data):
-        return (
-            "Electronics",
-            "High",
-            "Detected the complete electronics burn-in measurement structure "
-            "including IDDQ, Leakage, Delay and engineering limits."
+    column = find_decision_column(
+        result
+    )
+
+    if column is None:
+        return pd.Series(
+            ["UNKNOWN"] * len(result),
+            index=result.index,
         )
-
-    scores = calculate_domain_scores(data)
-
-    ranked = sorted(
-        scores.items(),
-        key=lambda item: item[1]["score"],
-        reverse=True,
-    )
-
-    if not ranked:
-        return (
-            "General / Unknown",
-            "Low",
-            "No measurable domain-specific evidence was identified."
-        )
-
-    best_domain, best_info = ranked[0]
-
-    second_score = ranked[1][1]["score"] if len(ranked) > 1 else 0
-    best_score = best_info["score"]
-
-    if best_score == 0:
-        return (
-            "General / Unknown",
-            "Low",
-            "No strong domain-specific measurement names were detected."
-        )
-
-    if best_score >= 4 and best_score >= second_score + 2:
-        confidence = "High"
-    elif best_score >= 2 and best_score > second_score:
-        confidence = "Medium"
-    else:
-        confidence = "Low"
-
-    matched_columns = best_info["matched_columns"][:8]
-
-    reason = (
-        f"Detected {best_score} domain-related measurement indicators: "
-        + ", ".join(matched_columns)
-        + "."
-    )
-
-    if confidence == "Low":
-        return (
-            "General / Unknown",
-            "Low",
-            "The available column names do not provide enough evidence "
-            "for a reliable domain-specific classification."
-        )
-
-    return best_domain, confidence, reason
-
-
-# ============================================================
-# DECISION HELPERS
-# ============================================================
-
-def decision_message(decision):
-    messages = {
-        "PASS": "No significant abnormality detected.",
-        "INVESTIGATE": "Potential risk detected. Further engineering investigation is recommended.",
-        "REJECT": "High-risk behaviour detected. The component requires rejection or immediate engineering review.",
-    }
-
-    return messages.get(
-        str(decision).upper(),
-        "Decision generated from the available AI and engineering evidence."
-    )
-
-
-# ============================================================
-# UNIVERSAL AI SCREENING
-# ============================================================
-
-def run_universal_screening(data):
-    """
-    Domain-independent AI screening engine.
-
-    Used when:
-    - domain is not Electronics
-    - domain is unknown
-    - specialized domain pipeline is not available
-
-    It detects abnormal behaviour from available numeric measurements.
-    """
-
-    df = data.copy()
-
-    parameter_columns = find_numeric_parameters(df)
-
-    if not parameter_columns:
-        raise ValueError(
-            "No usable numeric measurement parameters were found in the uploaded data."
-        )
-
-    feature_data = df[parameter_columns].apply(
-        pd.to_numeric,
-        errors="coerce",
-    )
-
-    feature_data = feature_data.replace(
-        [np.inf, -np.inf],
-        np.nan,
-    )
-
-    feature_data = feature_data.fillna(
-        feature_data.median(numeric_only=True)
-    )
-
-    feature_data = feature_data.fillna(0)
-
-    if len(feature_data) < 5:
-        raise ValueError(
-            "At least 5 valid records are required for AI screening."
-        )
-
-    scaler = StandardScaler()
-    scaled_features = scaler.fit_transform(feature_data)
-
-    contamination = min(
-        max(0.05, 0.15),
-        0.35,
-    )
-
-    model = IsolationForest(
-        n_estimators=200,
-        contamination=contamination,
-        random_state=42,
-    )
-
-    predictions = model.fit_predict(scaled_features)
-    decision_scores = model.decision_function(scaled_features)
-
-    isolation_risk = np.clip(
-        0.5 - decision_scores,
-        0,
-        1,
-    )
-
-    z_scores = np.abs(
-        (
-            feature_data
-            - feature_data.mean()
-        )
-        /
-        feature_data.std(ddof=0).replace(
-            0,
-            np.nan,
-        )
-    ).fillna(0)
-
-    max_z_score = z_scores.max(axis=1)
-
-    statistical_risk = np.clip(
-        max_z_score / 5,
-        0,
-        1,
-    )
-
-    anomaly_risk = (
-        0.5 * isolation_risk
-        + 0.5 * statistical_risk
-    )
-
-    anomaly_status = np.where(
-        (predictions == -1) | (max_z_score >= 3),
-        "ANOMALY",
-        "NORMAL",
-    )
-
-    risk_score = anomaly_risk
-
-    decisions = np.select(
-        [
-            risk_score >= 0.70,
-            risk_score >= 0.25,
-        ],
-        [
-            "REJECT",
-            "INVESTIGATE",
-        ],
-        default="PASS",
-    )
-
-    result = df.copy()
-
-    result["Isolation_Prediction"] = predictions
-    result["Isolation_Status"] = np.where(
-        predictions == -1,
-        "ANOMALY",
-        "NORMAL",
-    )
-    result["Isolation_Score"] = isolation_risk
-    result["Max_Z_Score"] = max_z_score
-    result["Statistical_Score"] = statistical_risk
-    result["Anomaly_Risk"] = anomaly_risk
-    result["Anomaly_Status"] = anomaly_status
-    result["Drift_Risk"] = 0.0
-    result["Drift_Status"] = "NOT_AVAILABLE"
-    result["Risk_Score"] = risk_score
-    result["Risk_Percentage"] = risk_score * 100
-    result["Final_Decision"] = decisions
-
-    explanations = []
-
-    for index in result.index:
-        status = result.loc[index, "Anomaly_Status"]
-        risk = safe_number(result.loc[index, "Anomaly_Risk"])
-
-        if status == "ANOMALY":
-            explanation = (
-                f"AI detected abnormal behaviour across the uploaded "
-                f"measurement profile. Anomaly risk = {risk:.2f}."
-            )
-        else:
-            explanation = (
-                f"No significant abnormal behaviour detected in the "
-                f"available measurements. Risk = {risk:.2f}."
-            )
-
-        explanations.append(explanation)
-
-    result["AI_Explanation"] = explanations
-
-    metrics = pd.DataFrame(
-        {
-            "Metric": [
-                "Records Processed",
-                "Measurement Parameters",
-                "Detected Anomalies",
-                "Normal Records",
-                "Mean Risk",
-                "Maximum Risk",
-            ],
-            "Value": [
-                len(result),
-                len(parameter_columns),
-                int((result["Anomaly_Status"] == "ANOMALY").sum()),
-                int((result["Anomaly_Status"] == "NORMAL").sum()),
-                round(result["Anomaly_Risk"].mean(), 4),
-                round(result["Anomaly_Risk"].max(), 4),
-            ],
-        }
-    )
-
-    return result, metrics, parameter_columns
-
-
-# ============================================================
-# ELECTRONICS SPECIALIZED SCREENING
-# ============================================================
-
-def run_electronics_screening(data):
-    """
-    Run the existing specialized Electronics AI pipeline.
-    """
-
-    upload_path = Path("data/uploaded_electronics_data.csv")
-    upload_path.parent.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
-    data.to_csv(
-        upload_path,
-        index=False,
-    )
-
-    try:
-        from main import ScreeningPipeline
-    except Exception as error:
-        raise RuntimeError(
-            "The Electronics AI Pipeline could not be loaded. "
-            f"Details: {error}"
-        )
-
-    pipeline = ScreeningPipeline()
-
-    pipeline_result = pipeline.run(
-        file_path=str(upload_path)
-    )
-
-    if isinstance(pipeline_result, tuple):
-        result = pipeline_result[0]
-
-        metrics = (
-            pipeline_result[1]
-            if len(pipeline_result) > 1
-            else None
-        )
-    else:
-        result = pipeline_result
-        metrics = None
-
-    result = result.copy()
-
-    # --------------------------------------------------------
-    # Use predicted 168h specification for early screening
-    # when available.
-    # --------------------------------------------------------
-
-    if "Predicted_Specification_Status" in result.columns:
-
-        predicted_status = (
-            result["Predicted_Specification_Status"]
-            .fillna("PASS")
-            .astype(str)
-            .str.upper()
-        )
-
-        result["Final_Decision"] = np.select(
-            [
-                predicted_status == "REJECT",
-                predicted_status == "INVESTIGATE",
-            ],
-            [
-                "REJECT",
-                "INVESTIGATE",
-            ],
-            default="PASS",
-        )
-
-    elif "Decision" in result.columns:
-
-        result["Final_Decision"] = (
-            result["Decision"]
-            .fillna("PASS")
-            .astype(str)
-            .str.upper()
-        )
-
-    else:
-        result["Final_Decision"] = "PASS"
-
-    # --------------------------------------------------------
-    # User-friendly explanation
-    # --------------------------------------------------------
-
-    explanations = []
-
-    for index in result.index:
-
-        decision = str(
-            result.loc[index, "Final_Decision"]
-        ).upper()
-
-        anomaly_status = str(
-            result.loc[index, "Anomaly_Status"]
-        ).upper() if "Anomaly_Status" in result.columns else "NORMAL"
-
-        anomaly_risk = safe_number(
-            result.loc[index, "Anomaly_Risk"]
-        ) if "Anomaly_Risk" in result.columns else 0
-
-        predicted_spec = str(
-            result.loc[index, "Predicted_Specification_Status"]
-        ).upper() if "Predicted_Specification_Status" in result.columns else "PASS"
-
-        reasons = []
-
-        if predicted_spec == "REJECT":
-            reasons.append(
-                "Predicted future value exceeds the engineering specification."
-            )
-
-        elif predicted_spec == "INVESTIGATE":
-            reasons.append(
-                "Predicted future value is approaching the engineering limit."
-            )
-
-        if anomaly_status == "ANOMALY":
-            reasons.append(
-                f"Abnormal behaviour detected by AI "
-                f"(anomaly risk {anomaly_risk:.2f})."
-            )
-
-        if not reasons:
-            reasons.append(
-                "Behaviour remains within the evaluated engineering and AI risk boundaries."
-            )
-
-        explanation = " ".join(reasons)
-
-        explanations.append(explanation)
-
-    result["AI_Explanation"] = explanations
-
-    return result, metrics
-
-
-# ============================================================
-# SCREENING ROUTER
-# ============================================================
-
-def execute_screening(data, selected_domain):
-    """
-    Decide which AI engine should process the uploaded data.
-    """
-
-    # --------------------------------------------------------
-    # Auto Detect
-    # --------------------------------------------------------
-
-    if selected_domain == "Auto Detect":
-
-        detected_domain, confidence, reason = detect_domain(data)
-
-        st.session_state.domain = detected_domain
-        st.session_state.domain_confidence = confidence
-        st.session_state.domain_reason = reason
-
-        # Specialized Electronics route
-        if detected_domain == "Electronics" and detect_electronics_v2_schema(data):
-
-            result, metrics = run_electronics_screening(data)
-
-            return (
-                result,
-                metrics,
-                "Electronics AI Pipeline",
-                detected_domain,
-                confidence,
-                reason,
-            )
-
-        # Generic universal route
-        result, metrics, _ = run_universal_screening(data)
-
-        return (
-            result,
-            metrics,
-            "Universal AI Screening Engine",
-            detected_domain,
-            confidence,
-            reason,
-        )
-
-    # --------------------------------------------------------
-    # Manual Electronics
-    # --------------------------------------------------------
-
-    if selected_domain == "Electronics":
-
-        if not detect_electronics_v2_schema(data):
-
-            st.warning(
-                "The uploaded data does not match the specialized "
-                "Electronics burn-in structure. The Universal AI Screening "
-                "Engine will be used instead to avoid applying an incorrect "
-                "electronics model."
-            )
-
-            result, metrics, _ = run_universal_screening(data)
-
-            return (
-                result,
-                metrics,
-                "Universal AI Screening Engine",
-                "Electronics",
-                "Low",
-                "Electronics was manually selected, but the specialized "
-                "burn-in schema was not available. Universal screening was used safely.",
-            )
-
-        result, metrics = run_electronics_screening(data)
-
-        return (
-            result,
-            metrics,
-            "Electronics AI Pipeline",
-            "Electronics",
-            "High",
-            "User selected Electronics and the specialized burn-in structure was detected.",
-        )
-
-    # --------------------------------------------------------
-    # Other domains
-    # --------------------------------------------------------
-
-    result, metrics, _ = run_universal_screening(data)
 
     return (
-        result,
-        metrics,
-        "Universal AI Screening Engine",
-        selected_domain,
-        "User Selected",
-        f"{selected_domain} was selected manually. "
-        "The universal domain-independent AI screening engine was used.",
+        result[column]
+        .astype(str)
+        .str.strip()
+        .str.upper()
     )
 
 
-# ============================================================
-# COMPONENT HISTORY
-# ============================================================
+def get_decision_counts(
+    result: pd.DataFrame,
+) -> Dict[str, int]:
 
-def build_component_history(row):
-    """
-    Build a time-series style history for component inspection.
-    """
+    decisions = get_decision_series(
+        result
+    )
 
-    history = []
+    supported = [
+        "PASS",
+        "MONITOR",
+        "REVIEW",
+        "INVESTIGATE",
+        "REJECT",
+    ]
 
-    electronics_groups = {
-        "IDDQ (uA)": [
-            ("0h", "Iddq_0h_uA"),
-            ("24h", "Iddq_24h_uA"),
-            ("96h", "Iddq_96h_uA"),
-            ("168h Actual", "Iddq_168h_uA"),
-            ("168h Predicted", "Predicted_Iddq_168h_uA"),
-        ],
-        "Leakage (uA)": [
-            ("0h", "Leakage_0h_uA"),
-            ("24h", "Leakage_24h_uA"),
-            ("96h", "Leakage_96h_uA"),
-            ("168h Actual", "Leakage_168h_uA"),
-            ("168h Predicted", "Predicted_Leakage_168h_uA"),
-        ],
-        "Delay (ns)": [
-            ("0h", "Delay_0h_ns"),
-            ("24h", "Delay_24h_ns"),
-            ("96h", "Delay_96h_ns"),
-            ("168h Actual", "Delay_168h_ns"),
-            ("168h Predicted", "Predicted_Delay_168h_ns"),
-        ],
+    return {
+        decision: int(
+            (decisions == decision).sum()
+        )
+        for decision in supported
     }
 
-    found_electronics = False
 
-    for parameter, points in electronics_groups.items():
+def get_risk_counts(
+    result: pd.DataFrame,
+) -> Dict[str, int]:
 
-        values = []
+    if "Risk_Level" not in result.columns:
+        return {}
 
-        for label, column in points:
-
-            if column in row.index:
-
-                value = pd.to_numeric(
-                    pd.Series([row[column]]),
-                    errors="coerce",
-                ).iloc[0]
-
-                if pd.notna(value):
-                    values.append(
-                        {
-                            "Parameter": parameter,
-                            "Time": label,
-                            "Value": float(value),
-                        }
-                    )
-
-        if values:
-            found_electronics = True
-            history.extend(values)
-
-    if found_electronics:
-        return pd.DataFrame(history)
-
-    # Generic fallback
-    generic_values = []
-
-    for column, value in row.items():
-
-        numeric_value = pd.to_numeric(
-            pd.Series([value]),
-            errors="coerce",
-        ).iloc[0]
-
-        if pd.notna(numeric_value):
-
-            if not is_non_measurement_column(column):
-
-                generic_values.append(
-                    {
-                        "Parameter": column,
-                        "Time": "Current",
-                        "Value": float(numeric_value),
-                    }
-                )
-
-    return pd.DataFrame(generic_values)
-
-
-# ============================================================
-# HOME PAGE
-# ============================================================
-
-def render_home():
-
-    st.title("🔬 AI-Assisted Adaptive Component Screening")
-
-    st.markdown(
-        """
-        ### Intelligent screening for component and equipment health
-
-        This platform analyzes uploaded measurement data using an
-        **adaptive AI screening architecture**.
-
-        **Upload your own data → detect the domain → analyze abnormal behaviour
-        → estimate risk → inspect individual components.**
-        """
-    )
-
-    st.divider()
-
-    col1, col2, col3, col4 = st.columns(4)
-
-    with col1:
-        st.metric(
-            "AI Architecture",
-            "Adaptive",
-        )
-
-    with col2:
-        st.metric(
-            "Domain Detection",
-            "Automatic",
-        )
-
-    with col3:
-        st.metric(
-            "Screening",
-            "AI Assisted",
-        )
-
-    with col4:
-        st.metric(
-            "Decision",
-            "Risk Based",
-        )
-
-    st.divider()
-
-    st.subheader("How the platform works")
-
-    steps = [
-        ("01", "Upload Data", "Upload CSV or Excel measurement data."),
-        ("02", "Domain Detection", "Select a domain or allow AI to identify it automatically."),
-        ("03", "Data Validation", "Check the structure and measurement quality."),
-        ("04", "AI Analysis", "Detect abnormal behaviour and calculate risk."),
-        ("05", "Future Screening", "Use a specialized pipeline when a validated domain model exists."),
-        ("06", "Decision", "PASS, INVESTIGATE or REJECT."),
-        ("07", "Component Intelligence", "Inspect individual component behaviour."),
-    ]
-
-    for number, title, description in steps:
-
-        with st.container(border=True):
-
-            c1, c2 = st.columns([1, 5])
-
-            with c1:
-                st.markdown(f"### {number}")
-
-            with c2:
-                st.markdown(f"**{title}**")
-                st.caption(description)
-
-    st.info(
-        "💡 If you do not know the domain, simply keep **Auto Detect** selected. "
-        "The application will inspect the uploaded measurement structure and "
-        "identify the most likely domain."
-    )
-
-
-# ============================================================
-# UPLOAD PAGE
-# ============================================================
-
-def render_upload():
-
-    st.title("📂 Upload Measurement Data")
-
-    st.write(
-        "Upload your own CSV or Excel dataset. The platform will analyze "
-        "the structure before selecting the appropriate AI screening route."
-    )
-
-    uploaded_file = st.file_uploader(
-        "Choose a measurement dataset",
-        type=["csv", "xlsx", "xls"],
-        help="CSV, XLSX and XLS files are supported.",
-    )
-
-    st.subheader("Domain")
-
-    domain_options = [
-        "Auto Detect",
-        "Electronics",
-        "Mechanical",
-        "Automotive",
-        "Manufacturing",
-        "Energy",
-        "Aerospace",
-        "Medical Equipment",
-        "Custom",
-    ]
-
-    selected_domain = st.selectbox(
-        "Select application domain",
-        domain_options,
-        index=domain_options.index(
-            st.session_state.get(
-                "domain_selection",
-                "Auto Detect",
-            )
-        ),
-        help=(
-            "Choose a domain manually or keep Auto Detect to let the "
-            "application identify the most likely domain from your dataset."
-        ),
-    )
-
-    st.session_state.domain_selection = selected_domain
-
-    if selected_domain == "Auto Detect":
-
-        st.info(
-            "🤖 Auto Detect is enabled. The application will inspect the "
-            "measurement columns and determine the most likely domain."
-        )
-
-    else:
-
-        st.info(
-            f"📌 Manual domain selection: **{selected_domain}**"
-        )
-
-    if uploaded_file is None:
-        return
-
-    try:
-
-        if uploaded_file.name.lower().endswith(".csv"):
-            data = pd.read_csv(uploaded_file)
-
-        else:
-            data = pd.read_excel(uploaded_file)
-
-        data = data.dropna(
-            axis=0,
-            how="all",
-        )
-
-        data = data.dropna(
-            axis=1,
-            how="all",
-        )
-
-        data = normalize_columns(data)
-
-    except Exception as error:
-
-        st.error(
-            f"Unable to read the uploaded file: {error}"
-        )
-        return
-
-    if data.empty:
-
-        st.error(
-            "The uploaded file does not contain usable records."
-        )
-        return
-
-    st.session_state.uploaded_data = data
-    st.session_state.uploaded_filename = uploaded_file.name
-    st.session_state.screening_done = False
-    st.session_state.screening_result = None
-
-    st.success(
-        f"Successfully loaded **{len(data):,} records** from "
-        f"**{uploaded_file.name}**."
-    )
-
-    st.divider()
-
-    # --------------------------------------------------------
-    # Dataset summary
-    # --------------------------------------------------------
-
-    c1, c2, c3, c4 = st.columns(4)
-
-    with c1:
-        st.metric(
-            "Records",
-            f"{len(data):,}",
-        )
-
-    with c2:
-        st.metric(
-            "Columns",
-            f"{len(data.columns):,}",
-        )
-
-    with c3:
-        st.metric(
-            "Numeric Columns",
-            f"{len(data.select_dtypes(include=np.number).columns):,}",
-        )
-
-    with c4:
-        component_column = find_component_column(data)
-
-        st.metric(
-            "Component ID",
-            component_column if component_column else "Not detected",
-        )
-
-    st.subheader("Dataset Preview")
-
-    st.dataframe(
-        data.head(20),
-        use_container_width=True,
-        hide_index=True,
-    )
-
-    # --------------------------------------------------------
-    # Preview automatic domain detection
-    # --------------------------------------------------------
-
-    detected_domain, confidence, reason = detect_domain(data)
-
-    st.subheader("🤖 Domain Intelligence")
-
-    d1, d2 = st.columns(2)
-
-    with d1:
-
-        st.markdown(
-            f"**Detected Domain:** `{detected_domain}`"
-        )
-
-        st.markdown(
-            f"**Confidence:** `{confidence}`"
-        )
-
-    with d2:
-
-        st.caption(
-            reason
-        )
-
-    # --------------------------------------------------------
-    # Run button
-    # --------------------------------------------------------
-
-    st.divider()
-
-    if st.button(
-        "🚀 Start AI Screening",
-        type="primary",
-        use_container_width=True,
-    ):
-
-        st.session_state.analysis_mode = None
-
-        with st.spinner(
-            "Analyzing dataset and running AI screening..."
-        ):
-
-            try:
-
-                (
-                    result,
-                    metrics,
-                    analysis_mode,
-                    final_domain,
-                    final_confidence,
-                    final_reason,
-                ) = execute_screening(
-                    data,
-                    selected_domain,
-                )
-
-                st.session_state.screening_result = result
-                st.session_state.model_metrics = metrics
-                st.session_state.analysis_mode = analysis_mode
-                st.session_state.domain = final_domain
-                st.session_state.domain_confidence = final_confidence
-                st.session_state.domain_reason = final_reason
-                st.session_state.component_column = find_component_column(
-                    result
-                )
-                st.session_state.parameter_columns = find_numeric_parameters(
-                    data
-                )
-                st.session_state.screening_done = True
-
-                st.success(
-                    "AI screening completed successfully."
-                )
-
-            except Exception as error:
-
-                st.error(
-                    f"Screening failed: {error}"
-                )
-
-                st.exception(error)
-
-
-# ============================================================
-# SCREENING PAGE
-# ============================================================
-
-def render_screening():
-
-    st.title("🧠 AI Screening")
-
-    result = st.session_state.screening_result
-
-    if result is None:
-
-        st.info(
-            "Upload a dataset and start AI screening first."
-        )
-        return
-
-    analysis_mode = st.session_state.analysis_mode
-    domain = st.session_state.domain
-    confidence = st.session_state.domain_confidence
-    reason = st.session_state.domain_reason
-
-    st.subheader("AI Routing")
-
-    c1, c2, c3 = st.columns(3)
-
-    with c1:
-        st.metric(
-            "Detected / Selected Domain",
-            domain or "Unknown",
-        )
-
-    with c2:
-        st.metric(
-            "Confidence",
-            confidence or "N/A",
-        )
-
-    with c3:
-        st.metric(
-            "AI Engine",
-            analysis_mode or "N/A",
-        )
-
-    st.caption(
-        reason or ""
-    )
-
-    st.divider()
-
-    # --------------------------------------------------------
-    # Decision metrics
-    # --------------------------------------------------------
-
-    decisions = (
-        result["Final_Decision"]
-        if "Final_Decision" in result.columns
-        else pd.Series(dtype=str)
-    )
-
-    pass_count = int(
-        (decisions == "PASS").sum()
-    )
-
-    investigate_count = int(
-        (decisions == "INVESTIGATE").sum()
-    )
-
-    reject_count = int(
-        (decisions == "REJECT").sum()
-    )
-
-    c1, c2, c3, c4 = st.columns(4)
-
-    with c1:
-        st.metric(
-            "Total",
-            f"{len(result):,}",
-        )
-
-    with c2:
-        st.metric(
-            "PASS",
-            f"{pass_count:,}",
-        )
-
-    with c3:
-        st.metric(
-            "INVESTIGATE",
-            f"{investigate_count:,}",
-        )
-
-    with c4:
-        st.metric(
-            "REJECT",
-            f"{reject_count:,}",
-        )
-
-    st.divider()
-
-    st.subheader("Screening Results")
-
-    display_columns = []
-
-    preferred_columns = [
-        "Component_ID",
-        "Device_ID",
-        "Unit_ID",
-        "Component_Type",
-        "Anomaly_Status",
-        "Anomaly_Risk",
-        "Drift_Status",
-        "Drift_Risk",
-        "Predicted_Specification_Status",
-        "Risk_Score",
-        "Risk_Percentage",
-        "Final_Decision",
-        "AI_Explanation",
-    ]
-
-    for column in preferred_columns:
-
-        if column in result.columns:
-            display_columns.append(column)
-
-    if not display_columns:
-        display_columns = list(result.columns)
-
-    st.dataframe(
-        result[display_columns],
-        use_container_width=True,
-        hide_index=True,
-    )
-
-
-# ============================================================
-# RESULTS PAGE
-# ============================================================
-
-def render_results():
-
-    st.title("📊 Results Dashboard")
-
-    result = st.session_state.screening_result
-
-    if result is None:
-
-        st.info(
-            "No screening results available yet."
-        )
-        return
-
-    st.subheader("Final Decision Distribution")
-
-    decisions = (
-        result["Final_Decision"]
-        .value_counts()
-        .reindex(
-            [
-                "PASS",
-                "INVESTIGATE",
-                "REJECT",
-            ],
-            fill_value=0,
-        )
-    )
-
-    st.bar_chart(
-        decisions
-    )
-
-    st.divider()
-
-    if "Risk_Score" in result.columns:
-
-        st.subheader("Risk Analysis")
-
-        c1, c2, c3 = st.columns(3)
-
-        with c1:
-            st.metric(
-                "Mean Risk",
-                f"{result['Risk_Score'].mean():.3f}",
-            )
-
-        with c2:
-            st.metric(
-                "Maximum Risk",
-                f"{result['Risk_Score'].max():.3f}",
-            )
-
-        with c3:
-            st.metric(
-                "High Risk Records",
-                f"{(result['Risk_Score'] >= 0.70).sum():,}",
-            )
-
-        st.line_chart(
-            result["Risk_Score"].reset_index(
-                drop=True
-            )
-        )
-
-    st.divider()
-
-    if "Anomaly_Status" in result.columns:
-
-        st.subheader("AI Anomaly Detection")
-
-        anomaly_counts = (
-            result["Anomaly_Status"]
-            .value_counts()
-        )
-
-        st.bar_chart(
-            anomaly_counts
-        )
-
-
-# ============================================================
-# COMPONENT INTELLIGENCE
-# ============================================================
-
-def render_component_inspection():
-
-    st.title("🔎 Component Intelligence")
-
-    result = st.session_state.screening_result
-
-    if result is None:
-
-        st.info(
-            "Run AI screening before opening Component Intelligence."
-        )
-        return
-
-    component_column = st.session_state.component_column
-
-    if component_column is None:
-
-        st.warning(
-            "A unique component/device identifier was not detected. "
-            "Individual component selection is unavailable for this dataset."
-        )
-
-        return
-
-    component_values = (
-        result[component_column]
+    levels = (
+        result["Risk_Level"]
         .astype(str)
-        .dropna()
-        .unique()
-        .tolist()
+        .str.strip()
+        .str.upper()
     )
 
-    if not component_values:
-        st.warning(
-            "No component identifiers were found."
-        )
-        return
-
-    selected_component = st.selectbox(
-        "Select Component / Device",
-        component_values,
-    )
-
-    row_data = result[
-        result[component_column].astype(str)
-        == selected_component
+    supported = [
+        "LOW",
+        "MEDIUM",
+        "HIGH",
+        "CRITICAL",
     ]
 
-    if row_data.empty:
-        st.warning(
-            "Selected component was not found."
+    return {
+        level: int(
+            (levels == level).sum()
         )
-        return
+        for level in supported
+    }
 
-    row = row_data.iloc[0]
 
-    decision = str(
-        row.get(
-            "Final_Decision",
-            "N/A",
-        )
-    )
+def get_anomaly_count(
+    result: pd.DataFrame,
+) -> int:
 
-    risk = safe_number(
-        row.get(
-            "Risk_Score",
-            row.get(
-                "Anomaly_Risk",
-                0,
-            ),
-        )
-    )
-
-    st.divider()
-
-    c1, c2, c3 = st.columns(3)
-
-    with c1:
-
-        st.metric(
-            "Final Decision",
-            decision,
-        )
-
-    with c2:
-
-        st.metric(
-            "Risk Score",
-            f"{risk:.3f}",
-        )
-
-    with c3:
-
-        st.metric(
-            "Risk",
-            f"{risk * 100:.1f}%",
-        )
-
-    st.info(
-        decision_message(decision)
-    )
-
-    # --------------------------------------------------------
-    # Identity
-    # --------------------------------------------------------
-
-    st.subheader("Component Identity")
-
-    identity_columns = [
-        component_column,
-        "Component_Type",
-        "Lot_ID",
-        "Device_Type",
-        "Equipment_Type",
-        "Machine_Type",
+    possible_columns = [
+        "Anomaly_Flag",
+        "Anomaly_Risk",
     ]
 
-    identity = {}
+    if "Anomaly_Flag" in result.columns:
 
-    for column in identity_columns:
-
-        if column in row.index:
-
-            identity[column] = row[column]
-
-    if identity:
-
-        identity_df = pd.DataFrame(
-            [
-                {
-                    "Property": key,
-                    "Value": value,
-                }
-                for key, value in identity.items()
-            ]
-        )
-
-        st.dataframe(
-            identity_df,
-            use_container_width=True,
-            hide_index=True,
-        )
-
-    # --------------------------------------------------------
-    # Measurement details
-    # --------------------------------------------------------
-
-    st.subheader("Measurement Details")
-
-    measurement_columns = []
-
-    for column in row.index:
-
-        if column in identity_columns:
-            continue
-
-        numeric_value = pd.to_numeric(
-            pd.Series([row[column]]),
+        values = pd.to_numeric(
+            result["Anomaly_Flag"],
             errors="coerce",
-        ).iloc[0]
+        ).fillna(0)
 
-        if pd.notna(numeric_value):
-            measurement_columns.append(column)
-
-    if measurement_columns:
-
-        measurement_df = pd.DataFrame(
-            {
-                "Parameter": measurement_columns,
-                "Value": [
-                    row[column]
-                    for column in measurement_columns
-                ],
-            }
+        return int(
+            (values > 0).sum()
         )
-
-        st.dataframe(
-            measurement_df,
-            use_container_width=True,
-            hide_index=True,
-        )
-
-    # --------------------------------------------------------
-    # Predictions
-    # --------------------------------------------------------
-
-    prediction_columns = [
-        column
-        for column in row.index
-        if "Predicted" in str(column)
-    ]
-
-    if prediction_columns:
-
-        st.subheader("🔮 AI Predicted Values")
-
-        prediction_df = pd.DataFrame(
-            {
-                "Parameter": prediction_columns,
-                "Predicted Value": [
-                    row[column]
-                    for column in prediction_columns
-                ],
-            }
-        )
-
-        st.dataframe(
-            prediction_df,
-            use_container_width=True,
-            hide_index=True,
-        )
-
-    # --------------------------------------------------------
-    # Engineering specifications
-    # --------------------------------------------------------
-
-    specification_columns = [
-        column
-        for column in row.index
-        if (
-            "Limit" in str(column)
-            or "Specification" in str(column)
-        )
-    ]
-
-    if specification_columns:
-
-        st.subheader("📏 Engineering Specifications")
-
-        specification_df = pd.DataFrame(
-            {
-                "Parameter": specification_columns,
-                "Value": [
-                    row[column]
-                    for column in specification_columns
-                ],
-            }
-        )
-
-        st.dataframe(
-            specification_df,
-            use_container_width=True,
-            hide_index=True,
-        )
-
-    # --------------------------------------------------------
-    # AI anomaly analysis
-    # --------------------------------------------------------
-
-    st.subheader("🤖 AI Anomaly Analysis")
-
-    if "Anomaly_Status" in row.index:
-
-        c1, c2, c3 = st.columns(3)
-
-        with c1:
-
-            st.metric(
-                "Anomaly Status",
-                str(row["Anomaly_Status"]),
-            )
-
-        with c2:
-
-            st.metric(
-                "Anomaly Risk",
-                f"{safe_number(row.get('Anomaly_Risk', 0)):.3f}",
-            )
-
-        with c3:
-
-            st.metric(
-                "Max Z-Score",
-                f"{safe_number(row.get('Max_Z_Score', 0)):.2f}",
-            )
-
-    # --------------------------------------------------------
-    # Drift analysis
-    # --------------------------------------------------------
-
-    drift_columns = [
-        column
-        for column in row.index
-        if "Drift" in str(column)
-    ]
-
-    if drift_columns:
-
-        st.subheader("📈 Drift Analysis")
-
-        drift_df = pd.DataFrame(
-            {
-                "Metric": drift_columns,
-                "Value": [
-                    row[column]
-                    for column in drift_columns
-                ],
-            }
-        )
-
-        st.dataframe(
-            drift_df,
-            use_container_width=True,
-            hide_index=True,
-        )
-
-    # --------------------------------------------------------
-    # Trend analysis
-    # --------------------------------------------------------
-
-    history = build_component_history(row)
-
-    if not history.empty:
-
-        st.subheader("📊 Component Behaviour Trend")
-
-        parameters = history["Parameter"].unique()
-
-        for parameter in parameters:
-
-            parameter_history = history[
-                history["Parameter"] == parameter
-            ].copy()
-
-            if len(parameter_history) >= 2:
-
-                chart_data = parameter_history[
-                    ["Time", "Value"]
-                ].set_index("Time")
-
-                st.markdown(
-                    f"**{parameter}**"
-                )
-
-                st.line_chart(
-                    chart_data
-                )
-
-    # --------------------------------------------------------
-    # AI explanation
-    # --------------------------------------------------------
-
-    st.subheader("💡 AI Explanation")
-
-    explanation = row.get(
-        "AI_Explanation",
-        "No explanation was generated.",
-    )
-
-    st.info(
-        str(explanation)
-    )
-
-    # --------------------------------------------------------
-    # Complete record
-    # --------------------------------------------------------
-
-    with st.expander(
-        "View Complete Component Record"
-    ):
-
-        st.dataframe(
-            pd.DataFrame(
-                [row]
-            ),
-            use_container_width=True,
-            hide_index=True,
-        )
-
-    # --------------------------------------------------------
-    # Individual report
-    # --------------------------------------------------------
-
-    component_report = pd.DataFrame(
-        [row]
-    )
-
-    report_bytes = component_report.to_csv(
-        index=False
-    ).encode("utf-8")
-
-    st.download_button(
-        "⬇️ Download Component Report",
-        data=report_bytes,
-        file_name=f"{selected_component}_screening_report.csv",
-        mime="text/csv",
-        use_container_width=True,
-    )
-
-
-# ============================================================
-# AI INTELLIGENCE PAGE
-# ============================================================
-
-def render_ai_intelligence():
-
-    st.title("🧠 AI Intelligence")
-
-    result = st.session_state.screening_result
-
-    if result is None:
-
-        st.info(
-            "Run AI screening first."
-        )
-        return
-
-    domain = st.session_state.domain
-    confidence = st.session_state.domain_confidence
-    reason = st.session_state.domain_reason
-
-    st.subheader("Domain Intelligence")
-
-    c1, c2 = st.columns(2)
-
-    with c1:
-
-        st.metric(
-            "Domain",
-            domain or "General / Unknown",
-        )
-
-        st.metric(
-            "Confidence",
-            confidence or "N/A",
-        )
-
-    with c2:
-
-        st.write(
-            "**Detection reasoning**"
-        )
-
-        st.info(
-            reason or "No additional reasoning available."
-        )
-
-    st.divider()
-
-    st.subheader("AI Engine")
-
-    st.write(
-        f"**{st.session_state.analysis_mode}**"
-    )
-
-    if st.session_state.analysis_mode == "Electronics AI Pipeline":
-
-        st.success(
-            "The uploaded dataset matched the validated Electronics "
-            "burn-in structure. The specialized Electronics AI pipeline "
-            "was selected."
-        )
-
-    else:
-
-        st.info(
-            "A domain-independent AI screening engine was used. "
-            "The system intentionally avoids applying a specialized "
-            "domain model when the required validated structure is not available."
-        )
-
-    # --------------------------------------------------------
-    # Anomaly intelligence
-    # --------------------------------------------------------
 
     if "Anomaly_Risk" in result.columns:
 
-        st.subheader("Anomaly Intelligence")
+        values = pd.to_numeric(
+            result["Anomaly_Risk"],
+            errors="coerce",
+        ).fillna(0)
 
-        c1, c2, c3 = st.columns(3)
-
-        with c1:
-
-            st.metric(
-                "Mean Anomaly Risk",
-                f"{result['Anomaly_Risk'].mean():.3f}",
-            )
-
-        with c2:
-
-            st.metric(
-                "Maximum Anomaly Risk",
-                f"{result['Anomaly_Risk'].max():.3f}",
-            )
-
-        with c3:
-
-            st.metric(
-                "Anomalies",
-                f"{(result['Anomaly_Status'] == 'ANOMALY').sum():,}"
-                if "Anomaly_Status" in result.columns
-                else "N/A",
-            )
-
-    # --------------------------------------------------------
-    # Model metrics
-    # --------------------------------------------------------
-
-    metrics = st.session_state.model_metrics
-
-    if metrics is not None:
-
-        st.subheader("Model / Screening Metrics")
-
-        if isinstance(metrics, pd.DataFrame):
-
-            st.dataframe(
-                metrics,
-                use_container_width=True,
-                hide_index=True,
-            )
-
-        elif isinstance(metrics, dict):
-
-            st.json(
-                metrics
-            )
-
-    # --------------------------------------------------------
-    # Risk distribution
-    # --------------------------------------------------------
-
-    if "Risk_Score" in result.columns:
-
-        st.subheader("Risk Distribution")
-
-        st.line_chart(
-            result["Risk_Score"].reset_index(
-                drop=True
-            )
+        return int(
+            (values >= 0.5).sum()
         )
 
+    return 0
 
-# ============================================================
-# REPORTS PAGE
-# ============================================================
 
-def render_reports():
+def _safe_float(value: Any) -> Optional[float]:
+    """Return a numeric value when possible, otherwise None."""
+    try:
+        converted = pd.to_numeric(value, errors="coerce")
+        if pd.isna(converted):
+            return None
+        return float(converted)
+    except Exception:
+        return None
 
-    st.title("📑 Reports")
 
-    result = st.session_state.screening_result
+def evaluate_spec_status(
+    value: Any,
+    direction: str,
+    minimum: Any = None,
+    warning_min: Any = None,
+    warning_max: Any = None,
+    maximum: Any = None,
+) -> str:
+    """
+    Calculate a display-level engineering status from the registered
+    specification limits. This is intentionally kept in the UI layer;
+    it does not modify the Phase 1 specification engine.
+    """
+    numeric_value = _safe_float(value)
+    if numeric_value is None:
+        return "REVIEW"
 
-    if result is None:
+    direction = str(direction or "UNKNOWN").strip().upper()
+    min_value = _safe_float(minimum)
+    warn_min = _safe_float(warning_min)
+    warn_max = _safe_float(warning_max)
+    max_value = _safe_float(maximum)
 
-        st.info(
-            "Run AI screening before generating reports."
+    if direction == "HIGH":
+        if max_value is not None and numeric_value > max_value:
+            return "VIOLATION"
+        if warn_max is not None and numeric_value > warn_max:
+            return "MONITOR"
+        return "PASS"
+
+    if direction == "LOW":
+        if min_value is not None and numeric_value < min_value:
+            return "VIOLATION"
+        if warn_min is not None and numeric_value < warn_min:
+            return "MONITOR"
+        return "PASS"
+
+    if direction == "BOTH":
+        if min_value is not None and numeric_value < min_value:
+            return "VIOLATION"
+        if max_value is not None and numeric_value > max_value:
+            return "VIOLATION"
+        if warn_min is not None and numeric_value < warn_min:
+            return "MONITOR"
+        if warn_max is not None and numeric_value > warn_max:
+            return "MONITOR"
+        return "PASS"
+
+    return "REVIEW"
+
+
+def specification_rule_text(
+    direction: str,
+    minimum: Any,
+    warning_min: Any,
+    warning_max: Any,
+    maximum: Any,
+) -> str:
+    """Build a compact human-readable engineering rule."""
+    direction = str(direction or "UNKNOWN").strip().upper()
+
+    if direction == "HIGH":
+        parts = []
+        if warning_max is not None:
+            parts.append(f"PASS <= {warning_max}")
+            if maximum is not None:
+                parts.append(f"MONITOR > {warning_max} and <= {maximum}")
+        elif maximum is not None:
+            parts.append(f"PASS <= {maximum}")
+        if maximum is not None:
+            parts.append(f"VIOLATION > {maximum}")
+        return "HIGH-direction rule: " + "; ".join(parts)
+
+    if direction == "LOW":
+        parts = []
+        if warning_min is not None:
+            parts.append(f"PASS >= {warning_min}")
+            if minimum is not None:
+                parts.append(f"MONITOR < {warning_min} and >= {minimum}")
+        elif minimum is not None:
+            parts.append(f"PASS >= {minimum}")
+        if minimum is not None:
+            parts.append(f"VIOLATION < {minimum}")
+        return "LOW-direction rule: " + "; ".join(parts)
+
+    if direction == "BOTH":
+        return (
+            "BOTH-direction rule: "
+            f"allowed range {minimum} to {maximum}; "
+            f"warning range {warning_min} to {warning_max}"
         )
-        return
 
-    st.subheader("Complete Screening Report")
+    return "UNKNOWN-direction rule: engineering review required."
 
-    csv_data = result.to_csv(
-        index=False
-    ).encode("utf-8")
 
-    st.download_button(
-        "⬇️ Download Complete Screening Results",
-        data=csv_data,
-        file_name="ai_screening_results.csv",
-        mime="text/csv",
-        use_container_width=True,
-    )
+def parameter_column_candidates(parameter: str) -> Dict[str, list]:
+    """Known electronics burn-in column candidates used only for UI fallback."""
+    mapping = {
+        "Iddq": {
+            "0h": ["Iddq_0h_uA"],
+            "24h": ["Iddq_24h_uA"],
+            "96h": ["Iddq_96h_uA"],
+            "168h": ["Predicted_Iddq_168h", "Iddq_168h_uA"],
+        },
+        "Leakage": {
+            "0h": ["Leakage_0h_uA"],
+            "24h": ["Leakage_24h_uA"],
+            "96h": ["Leakage_96h_uA"],
+            "168h": ["Predicted_Leakage_168h", "Leakage_168h_uA"],
+        },
+        "Delay": {
+            "0h": ["Delay_0h_ns"],
+            "24h": ["Delay_24h_ns"],
+            "96h": ["Delay_96h_ns"],
+            "168h": ["Predicted_Delay_168h", "Delay_168h_ns"],
+        },
+    }
+    return mapping.get(parameter, {})
 
-    st.divider()
 
-    metrics = st.session_state.model_metrics
+def first_existing_value(row: pd.Series, candidates: list) -> Any:
+    """Return the first available non-null value from candidate columns."""
+    for column in candidates:
+        if column in row.index and pd.notna(row[column]):
+            return row[column]
+    return None
 
-    if isinstance(metrics, pd.DataFrame):
 
-        metrics_csv = metrics.to_csv(
-            index=False
-        ).encode("utf-8")
+def enrich_quantitative_evidence(
+    result: pd.DataFrame,
+    row: pd.Series,
+    component: Dict[str, Any],
+    quantitative: list,
+    allow_fallback: bool = True,
+) -> list:
+    """
+    Normalize and enrich the explanation records shown by the UI.
 
-        st.download_button(
-            "⬇️ Download AI Metrics",
-            data=metrics_csv,
-            file_name="ai_model_metrics.csv",
-            mime="text/csv",
-            use_container_width=True,
+    The function uses the already-produced component intelligence first and
+    derives missing presentation fields from the selected result row/lot.
+    It does not alter the screening result itself.
+    """
+    parameters = component.get("parameters", {}) or {}
+    enriched = []
+
+    for raw_record in quantitative or []:
+        record = dict(raw_record)
+        parameter = str(
+            record.get("parameter")
+            or record.get("Parameter")
+            or ""
+        ).strip()
+
+        if not parameter:
+            continue
+
+        info = parameters.get(parameter, {}) or {}
+        measurements = info.get("measurements", {}) or {}
+
+        display_name = (
+            info.get("display_name")
+            or record.get("display_name")
+            or parameter
         )
 
-    st.subheader("Report Summary")
-
-    decisions = (
-        result["Final_Decision"]
-        .value_counts()
-        .reindex(
-            [
-                "PASS",
-                "INVESTIGATE",
-                "REJECT",
-            ],
-            fill_value=0,
+        current_value = _safe_float(
+            record.get("current_value", measurements.get("24h"))
         )
+        predicted_value = _safe_float(
+            record.get("predicted_168h", measurements.get("168h_predicted"))
+        )
+
+        direction = str(
+            record.get("direction")
+            or info.get("direction")
+            or "UNKNOWN"
+        ).upper()
+
+        engineering_limit = record.get(
+            "engineering_limit",
+            info.get("engineering_limit"),
+        )
+        warning_limit = record.get(
+            "warning_limit",
+            info.get("warning_limit"),
+        )
+
+        minimum = None
+        warning_min = None
+        warning_max = None
+        maximum = None
+
+        if isinstance(engineering_limit, dict):
+            minimum = engineering_limit.get("min", engineering_limit.get("minimum"))
+            warning_min = engineering_limit.get(
+                "warning_min",
+                engineering_limit.get("warning_minimum"),
+            )
+            warning_max = engineering_limit.get(
+                "warning_max",
+                engineering_limit.get("warning_maximum"),
+            )
+            maximum = engineering_limit.get("max", engineering_limit.get("maximum"))
+        else:
+            maximum = engineering_limit
+
+        if isinstance(warning_limit, dict):
+            warning_min = warning_limit.get(
+                "min",
+                warning_limit.get("warning_min"),
+            )
+            warning_max = warning_limit.get(
+                "max",
+                warning_limit.get("warning_max"),
+            )
+        elif warning_limit is not None:
+            if direction == "HIGH":
+                warning_max = warning_limit
+            elif direction == "LOW":
+                warning_min = warning_limit
+
+        if maximum is None:
+            maximum = info.get("maximum")
+        if minimum is None:
+            minimum = info.get("minimum")
+        if warning_max is None:
+            warning_max = info.get("warning_max")
+        if warning_min is None:
+            warning_min = info.get("warning_min")
+
+        current_status = evaluate_spec_status(
+            current_value,
+            direction,
+            minimum,
+            warning_min,
+            warning_max,
+            maximum,
+        )
+        predicted_status = evaluate_spec_status(
+            predicted_value,
+            direction,
+            minimum,
+            warning_min,
+            warning_max,
+            maximum,
+        )
+
+        # Prefer actual component-provided status only when it is meaningful.
+        supplied_current = str(
+            info.get("current_spec_status")
+            or record.get("current_spec_status")
+            or ""
+        ).strip().upper()
+        supplied_predicted = str(
+            info.get("predicted_spec_status")
+            or record.get("predicted_spec_status")
+            or ""
+        ).strip().upper()
+
+        if supplied_current and supplied_current not in {"UNKNOWN", "NONE", "NAN"}:
+            current_status = supplied_current
+        if supplied_predicted and supplied_predicted not in {"UNKNOWN", "NONE", "NAN"}:
+            predicted_status = supplied_predicted
+
+        candidates = parameter_column_candidates(parameter)
+        current_column = candidates.get("24h", [])
+        current_source = first_existing_value(row, current_column)
+
+        # Lot-level quantitative context.
+        lot_id = row.get("Lot_ID", None)
+        lot_values = pd.Series(dtype="float64")
+        if lot_id is not None and "Lot_ID" in result.columns:
+            lot_mask = result["Lot_ID"].astype(str) == str(lot_id)
+            for candidate in current_column:
+                if candidate in result.columns:
+                    lot_values = pd.to_numeric(
+                        result.loc[lot_mask, candidate],
+                        errors="coerce",
+                    ).dropna()
+                    if not lot_values.empty:
+                        break
+
+        lot_mean = float(lot_values.mean()) if not lot_values.empty else None
+        lot_median = float(lot_values.median()) if not lot_values.empty else None
+        lot_std = float(lot_values.std(ddof=0)) if len(lot_values) > 1 else None
+
+        lot_z = None
+        if current_value is not None and lot_mean is not None and lot_std not in {None, 0.0}:
+            lot_z = (current_value - lot_mean) / lot_std
+
+        drift_value = _safe_float(
+            info.get("drift_percentage")
+            or record.get("drift_percentage")
+        )
+
+        # If the component intelligence did not supply drift %, derive it from
+        # the displayed current and predicted values.
+        if drift_value is None and current_value not in {None, 0.0} and predicted_value is not None:
+            drift_value = ((predicted_value - current_value) / abs(current_value)) * 100.0
+
+        # Global/lot anomaly signals are already produced by Phase 1.
+        global_z = _safe_float(row.get("Global_Z_Score"))
+        combined_anomaly = _safe_float(row.get("Anomaly_Risk"))
+        lot_anomaly = _safe_float(row.get("Anomaly_Lot_Risk"))
+        drift_risk = _safe_float(row.get("Drift_Risk"))
+
+        record.update(
+            {
+                "parameter": parameter,
+                "Parameter": display_name,
+                "current_value": current_value,
+                "unit": record.get("unit") or info.get("unit") or "",
+                "direction": direction,
+                "lot_mean": lot_mean,
+                "lot_median": lot_median,
+                "lot_z_score": lot_z,
+                "global_z_score": global_z,
+                "anomaly_contribution": combined_anomaly,
+                "lot_anomaly_contribution": lot_anomaly,
+                "drift_percent": drift_value,
+                "drift_risk": drift_risk,
+                "predicted_168h": predicted_value,
+                "engineering_limit": _safe_float(maximum),
+                "warning_limit": _safe_float(warning_max if direction == "HIGH" else warning_min),
+                "current_spec_status": current_status,
+                "predicted_spec_status": predicted_status,
+                "engineering_rule": specification_rule_text(
+                    direction,
+                    minimum,
+                    warning_min,
+                    warning_max,
+                    maximum,
+                ),
+            }
+        )
+
+    # If the explainability engine returned nothing, construct the records
+    # directly from ComponentIntelligence's parameter payload.
+    if not enriched and parameters and allow_fallback:
+        fallback_records = []
+
+        for parameter, info in parameters.items():
+            measurements = info.get("measurements", {}) or {}
+            fallback_records.append(
+                {
+                    "parameter": parameter,
+                    "current_value": measurements.get("24h"),
+                    "unit": info.get("unit", ""),
+                    "direction": info.get("direction", "UNKNOWN"),
+                    "predicted_168h": measurements.get("168h_predicted"),
+                    "engineering_limit": info.get("engineering_limit"),
+                    "warning_limit": info.get("warning_limit"),
+                    "current_spec_status": info.get("current_spec_status"),
+                    "predicted_spec_status": info.get("predicted_spec_status"),
+                    "drift_percentage": info.get("drift_percentage"),
+                }
+            )
+
+        # Run the normal enrichment once on the fallback records, but
+        # explicitly disable fallback recursion.
+        if fallback_records:
+            enriched = enrich_quantitative_evidence(
+                result,
+                row,
+                component,
+                fallback_records,
+                allow_fallback=False,
+            )
+
+    return enriched
+
+
+def build_quantitative_why(
+    result: pd.DataFrame,
+    row: pd.Series,
+    component: Dict[str, Any],
+    quantitative: list,
+    decision: str,
+) -> Dict[str, Any]:
+    """Build a transparent engineering WHY panel from existing model outputs."""
+    enriched = enrich_quantitative_evidence(
+        result,
+        row,
+        component,
+        quantitative,
     )
 
-    summary = pd.DataFrame(
-        {
-            "Decision": decisions.index,
-            "Count": decisions.values,
-        }
+    anomaly_flag = bool(
+        row.get("Anomaly_Flag", False)
     )
+    anomaly_risk = _safe_float(row.get("Anomaly_Risk"))
+    lot_anomaly_risk = _safe_float(row.get("Anomaly_Lot_Risk"))
+    drift_risk = _safe_float(row.get("Drift_Risk"))
+    risk_level = str(row.get("Risk_Level", "UNKNOWN")).upper()
+    contributors = str(
+        row.get("Risk_Contributors", "")
+    ).strip()
 
-    st.dataframe(
-        summary,
-        use_container_width=True,
-        hide_index=True,
-    )
+    concerns = []
+
+    if anomaly_flag or (anomaly_risk is not None and anomaly_risk >= 0.5):
+        concerns.append(
+            f"anomaly signal detected (risk={anomaly_risk:.3f})"
+            if anomaly_risk is not None
+            else "anomaly signal detected"
+        )
+
+    if lot_anomaly_risk is not None and lot_anomaly_risk > 0:
+        concerns.append(
+            f"lot-relative anomaly contribution={lot_anomaly_risk:.3f}"
+        )
+
+    if drift_risk is not None and drift_risk > 0:
+        concerns.append(
+            f"drift risk={drift_risk:.3f}"
+        )
+
+    current_violations = [
+        item["Parameter"]
+        for item in enriched
+        if str(item.get("current_spec_status", "")).upper() == "VIOLATION"
+    ]
+    predicted_violations = [
+        item["Parameter"]
+        for item in enriched
+        if str(item.get("predicted_spec_status", "")).upper() == "VIOLATION"
+    ]
+
+    if current_violations:
+        concerns.append(
+            "current specification violation: "
+            + ", ".join(current_violations)
+        )
+
+    if predicted_violations:
+        concerns.append(
+            "predicted 168h specification violation: "
+            + ", ".join(predicted_violations)
+        )
+
+    if concerns:
+        primary_reason = (
+            f"{decision} because "
+            + "; ".join(concerns)
+            + "."
+        )
+    else:
+        primary_reason = (
+            f"{decision}: no specification violation or strong anomaly "
+            "signal was identified in the available engineering evidence."
+        )
+
+    if contributors:
+        primary_reason += f" Risk contributors reported by the engine: {contributors}."
+
+    summary = {
+        "primary_reason": primary_reason,
+        "risk_level": risk_level,
+        "decision": decision,
+        "anomaly_flag": anomaly_flag,
+        "anomaly_risk": anomaly_risk,
+        "lot_anomaly_risk": lot_anomaly_risk,
+        "drift_risk": drift_risk,
+        "quantitative": enriched,
+    }
+
+    return summary
 
 
-# ============================================================
+# ================================================================
+# METADATA
+# ================================================================
+
+def get_engine_metadata(
+    result: pd.DataFrame,
+) -> Dict[str, Any]:
+
+    metadata = {
+        "Dataset Rows": str(len(result)),
+        "Result Columns": str(len(result.columns)),
+        "Generated": datetime.now().strftime(
+            "%Y-%m-%d %H:%M:%S"
+        ),
+    }
+
+    if "Domain" in result.columns and len(result) > 0:
+        metadata["Domain"] = str(result["Domain"].iloc[0])
+
+    if "Dataset_ID" in result.columns and len(result) > 0:
+        metadata["Dataset ID"] = str(result["Dataset_ID"].iloc[0])
+
+    if "Dataset_Version" in result.columns and len(result) > 0:
+        metadata["Dataset Version"] = str(result["Dataset_Version"].iloc[0])
+
+    return metadata
+
+
+# ================================================================
 # SIDEBAR
-# ============================================================
+# ================================================================
 
 with st.sidebar:
 
-    st.title("🔬 AI Screening")
+    st.markdown(
+        "## 🔬 Burn-In AI"
+    )
 
     st.caption(
-        "Adaptive Component Intelligence Platform"
+        "Intelligent Component Screening"
     )
 
     st.divider()
 
     page = st.radio(
-        "Navigation",
+        "Application Menu",
         [
-            "Home",
-            "Upload Data",
-            "AI Screening",
-            "Results",
-            "Component Intelligence",
-            "AI Intelligence",
-            "Reports",
+            "🏠 Home",
+            "📂 Upload Data",
+            "⚙️ Screening",
+            "📊 Results",
+            "🔎 Investigation",
+            "📥 Reports",
         ],
     )
 
     st.divider()
 
-    if st.session_state.uploaded_data is not None:
+    st.markdown(
+        "**Operating Mode**"
+    )
 
-        st.markdown("### Current Dataset")
+    operating_mode = st.radio(
+        "Select mode",
+        [
+            "LIVE_FUTURE_SCREENING",
+            "TRAINING_EVALUATION",
+        ],
+        format_func=lambda value: (
+            "Live Future Screening"
+            if value == "LIVE_FUTURE_SCREENING"
+            else "Training / Evaluation"
+        ),
+    )
 
+    st.divider()
+
+    st.info(
+        "AI-assisted anomaly detection, "
+        "lot-aware screening and 168h future prediction."
+    )
+
+
+# ================================================================
+# HEADER
+# ================================================================
+
+st.markdown(
+    '<div class="main-title">'
+    'AI-Driven Burn-In Screening'
+    '</div>',
+    unsafe_allow_html=True,
+)
+
+st.markdown(
+    '<div class="subtitle">'
+    'Intelligent anomaly detection and future drift prediction '
+    'for high-reliability components'
+    '</div>',
+    unsafe_allow_html=True,
+)
+
+
+# ================================================================
+# HOME
+# ================================================================
+
+if page == "🏠 Home":
+
+    st.markdown(
+        """
+        <div class="info-box">
+        <b>Welcome to the SIH26170 Burn-In Screening Platform</b>
+        <br><br>
+        Upload component burn-in measurements, automatically identify
+        the engineering domain, screen component behaviour and predict
+        possible 168-hour degradation before the final measurement.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.markdown(
+        '<div class="section-title">'
+        'Application Workflow'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        st.markdown("### 1️⃣")
+        st.markdown("**Upload Data**")
         st.caption(
-            st.session_state.uploaded_filename
-            or "Uploaded dataset"
+            "Upload CSV or Excel burn-in measurements."
         )
 
+    with col2:
+        st.markdown("### 2️⃣")
+        st.markdown("**AI Screening**")
         st.caption(
-            f"{len(st.session_state.uploaded_data):,} records"
+            "Detect abnormal and lot-relative behaviour."
         )
 
-        if st.session_state.domain:
+    with col3:
+        st.markdown("### 3️⃣")
+        st.markdown("**Future Risk**")
+        st.caption(
+            "Predict 168h behaviour and combine risks."
+        )
 
-            st.caption(
-                f"Domain: {st.session_state.domain}"
+    with col4:
+        st.markdown("### 4️⃣")
+        st.markdown("**Engineering Report**")
+        st.caption(
+            "Investigate components and export results."
+        )
+
+    st.markdown(
+        '<div class="section-title">'
+        'AI Capabilities'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.metric(
+            "Anomaly Intelligence",
+            "Global + Lot",
+        )
+
+    with col2:
+        st.metric(
+            "Future Horizon",
+            "168h",
+        )
+
+    with col3:
+        st.metric(
+            "Electronics Parameters",
+            "3",
+        )
+
+    st.markdown(
+        "### 🔎 AI Pipeline"
+    )
+
+    st.code(
+        """
+Upload
+  ↓
+Data Quality
+  ↓
+Automatic Domain Detection
+  ↓
+AI Anomaly Detection
+  ↓
+168h Drift Prediction
+  ↓
+Specification Evaluation
+  ↓
+Risk Fusion
+  ↓
+Component Intelligence
+  ↓
+Engineering Decision
+        """,
+        language="text",
+    )
+
+
+# ================================================================
+# UPLOAD DATA
+# ================================================================
+
+elif page == "📂 Upload Data":
+
+    st.markdown(
+        '<div class="section-title">'
+        'Upload Burn-In Measurement Data'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+    uploaded_file = st.file_uploader(
+        "Choose component measurement dataset",
+        type=[
+            "csv",
+            "xlsx",
+            "xls",
+        ],
+    )
+
+    if uploaded_file is not None:
+
+        try:
+
+            df = load_uploaded_file(
+                uploaded_file
             )
 
-        if st.session_state.analysis_mode:
+            st.session_state.uploaded_data = df
+            st.session_state.screening_done = False
+            st.session_state.screening_result = None
+            st.session_state.component_result = None
 
-            st.caption(
-                f"Engine: {st.session_state.analysis_mode}"
+            st.success(
+                "Dataset uploaded successfully."
+            )
+
+        except Exception as error:
+
+            st.error(
+                f"Unable to read dataset: {error}"
+            )
+
+    if st.session_state.uploaded_data is not None:
+
+        df = st.session_state.uploaded_data
+
+        st.markdown(
+            "### Dataset Information"
+        )
+
+        col1, col2, col3, col4 = st.columns(4)
+
+        with col1:
+            st.metric(
+                "Rows",
+                len(df),
+            )
+
+        with col2:
+            st.metric(
+                "Columns",
+                len(df.columns),
+            )
+
+        with col3:
+            st.metric(
+                "Missing Values",
+                int(
+                    df.isnull().sum().sum()
+                ),
+            )
+
+        with col4:
+            st.metric(
+                "Numeric Columns",
+                len(
+                    df.select_dtypes(
+                        include="number"
+                    ).columns
+                ),
+            )
+
+        st.markdown(
+            "### Data Preview"
+        )
+
+        st.dataframe(
+            df.head(20),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        with st.expander(
+            "Available Columns"
+        ):
+
+            st.write(
+                list(df.columns)
             )
 
     else:
 
-        st.caption(
-            "No dataset uploaded."
+        st.info(
+            "Please upload a CSV or Excel dataset."
         )
 
 
-# ============================================================
-# PAGE ROUTER
-# ============================================================
+# ================================================================
+# SCREENING
+# ================================================================
 
-if page == "Home":
+elif page == "⚙️ Screening":
 
-    render_home()
+    st.markdown(
+        '<div class="section-title">'
+        'AI Screening Configuration'
+        '</div>',
+        unsafe_allow_html=True,
+    )
 
-elif page == "Upload Data":
+    if st.session_state.uploaded_data is None:
 
-    render_upload()
+        st.warning(
+            "Please upload a dataset before screening."
+        )
 
-elif page == "AI Screening":
+    else:
 
-    render_screening()
+        df = st.session_state.uploaded_data
 
-elif page == "Results":
+        st.success(
+            f"Dataset ready: {len(df)} components / records"
+        )
 
-    render_results()
+        col1, col2 = st.columns(2)
 
-elif page == "Component Intelligence":
+        with col1:
 
-    render_component_inspection()
+            st.markdown(
+                "### Operating Mode"
+            )
 
-elif page == "AI Intelligence":
+            if operating_mode == "LIVE_FUTURE_SCREENING":
 
-    render_ai_intelligence()
+                st.info(
+                    "Live mode: early measurements are used "
+                    "to predict unseen 168h behaviour."
+                )
 
-elif page == "Reports":
+            else:
 
-    render_reports()
+                st.info(
+                    "Training / Evaluation mode: historical "
+                    "168h data can be used for model evaluation."
+                )
+
+        with col2:
+
+            st.markdown(
+                "### Dataset Type"
+            )
+
+            st.write(
+                "Automatic domain detection"
+            )
+
+            st.write(
+                "Electronics / Universal screening"
+            )
+
+        st.markdown(
+            "### AI Modules"
+        )
+
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            st.success(
+                "✓ Dynamic Anomaly Detection"
+            )
+
+        with col2:
+            st.success(
+                "✓ 168h Drift Prediction"
+            )
+
+        with col3:
+            st.success(
+                "✓ Risk Fusion"
+            )
+
+        if st.button(
+            "🚀 Start AI Screening",
+            type="primary",
+            use_container_width=True,
+        ):
+
+            with st.spinner(
+                "Running SIH26170 AI screening..."
+            ):
+
+                try:
+
+                    # ------------------------------------------------
+                    # Data quality
+                    # ------------------------------------------------
+
+                    quality_engine = (
+                        get_quality_engine()
+                    )
+
+                    quality_result = (
+                        quality_engine.analyze(
+                            df,
+                            mode=operating_mode,
+                        )
+                    )
+
+                    st.session_state.quality_result = (
+                        quality_result
+                    )
+
+                    if not quality_result.get(
+                        "data_ready",
+                        False,
+                    ):
+
+                        st.error(
+                            "Dataset is not ready for screening."
+                        )
+
+                        st.stop()
+
+                    # ------------------------------------------------
+                    # Domain detection
+                    # ------------------------------------------------
+
+                    universal_engine = (
+                        get_universal_engine()
+                    )
+
+                    domain_result = (
+                        universal_engine.detect_domain(
+                            data=df,
+                        )
+                    )
+
+                    st.session_state.domain_result = (
+                        domain_result
+                    )
+
+                    # ------------------------------------------------
+                    # Phase 1 AI core
+                    # ------------------------------------------------
+
+                    phase1_engine = (
+                        get_phase1_engine()
+                    )
+
+                    phase1_result = (
+                        phase1_engine.run(
+                            df,
+                            mode=operating_mode,
+                            train_models=(
+                                operating_mode
+                                == "TRAINING_EVALUATION"
+                            ),
+                        )
+                    )
+
+                    st.session_state.phase1_result = (
+                        phase1_result
+                    )
+
+                    # ------------------------------------------------
+                    # Universal application layer
+                    # ------------------------------------------------
+
+                    screening = (
+                        universal_engine.screen(
+                            data=df,
+                            phase1_result=phase1_result,
+                            mode=operating_mode,
+                        )
+                    )
+
+                    result = screening[
+                        "result"
+                    ]
+
+                    st.session_state.screening_result = (
+                        screening
+                    )
+
+                    # ------------------------------------------------
+                    # Component intelligence
+                    # ------------------------------------------------
+
+                    component_engine = (
+                        get_component_engine()
+                    )
+
+                    component_result = (
+                        component_engine.analyze(
+                            result
+                        )
+                    )
+
+                    st.session_state.component_result = (
+                        component_result
+                    )
+
+                    st.session_state.screening_done = True
+
+                    st.success(
+                        "AI screening completed successfully."
+                    )
+
+                except Exception as error:
+
+                    st.error(
+                        f"Screening failed: {error}"
+                    )
+
+
+# ================================================================
+# RESULTS
+# ================================================================
+
+elif page == "📊 Results":
+
+    st.markdown(
+        '<div class="section-title">'
+        'AI Screening Results'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+    screening = (
+        st.session_state.screening_result
+    )
+
+    if screening is None:
+
+        st.warning(
+            "No screening results available. "
+            "Run AI screening first."
+        )
+
+    else:
+
+        result = screening[
+            "result"
+        ]
+
+        decision_counts = (
+            get_decision_counts(
+                result
+            )
+        )
+
+        risk_counts = (
+            get_risk_counts(
+                result
+            )
+        )
+
+        anomaly_count = (
+            get_anomaly_count(
+                result
+            )
+        )
+
+        prediction_count = sum(
+            column in result.columns
+            for column in [
+                "Predicted_Iddq_168h",
+                "Predicted_Leakage_168h",
+                "Predicted_Delay_168h",
+            ]
+        )
+
+        # ------------------------------------------------------------
+        # KPI row
+        # ------------------------------------------------------------
+
+        col1, col2, col3, col4, col5 = st.columns(5)
+
+        with col1:
+            st.metric(
+                "Total Components",
+                len(result),
+            )
+
+        with col2:
+            st.metric(
+                "PASS",
+                decision_counts.get(
+                    "PASS",
+                    0,
+                ),
+            )
+
+        with col3:
+            st.metric(
+                "MONITOR",
+                decision_counts.get(
+                    "MONITOR",
+                    0,
+                ),
+            )
+
+        with col4:
+            st.metric(
+                "REVIEW",
+                decision_counts.get(
+                    "REVIEW",
+                    0,
+                )
+                + decision_counts.get(
+                    "INVESTIGATE",
+                    0,
+                ),
+            )
+
+        with col5:
+            st.metric(
+                "REJECT",
+                decision_counts.get(
+                    "REJECT",
+                    0,
+                ),
+            )
+
+        st.divider()
+
+        # ------------------------------------------------------------
+        # Domain / screening status
+        # ------------------------------------------------------------
+
+        domain_result = (
+            st.session_state.domain_result
+            or {}
+        )
+
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+
+            st.metric(
+                "Domain",
+                domain_result.get(
+                    "display_name",
+                    domain_result.get(
+                        "domain",
+                        "Unknown",
+                    ),
+                ),
+            )
+
+        with col2:
+
+            st.metric(
+                "Screening Status",
+                screening.get(
+                    "screening_status",
+                    "SCREENED",
+                ),
+            )
+
+        with col3:
+
+            st.metric(
+                "168h Predictions",
+                f"{prediction_count}/3",
+            )
+
+        # ------------------------------------------------------------
+        # Risk overview
+        # ------------------------------------------------------------
+
+        st.markdown(
+            "### ⚠️ Risk Overview"
+        )
+
+        col1, col2, col3, col4 = st.columns(4)
+
+        with col1:
+            st.metric(
+                "Low",
+                risk_counts.get(
+                    "LOW",
+                    0,
+                ),
+            )
+
+        with col2:
+            st.metric(
+                "Medium",
+                risk_counts.get(
+                    "MEDIUM",
+                    0,
+                ),
+            )
+
+        with col3:
+            st.metric(
+                "High",
+                risk_counts.get(
+                    "HIGH",
+                    0,
+                ),
+            )
+
+        with col4:
+            st.metric(
+                "Critical",
+                risk_counts.get(
+                    "CRITICAL",
+                    0,
+                ),
+            )
+
+        st.caption(
+            f"Anomaly-flagged components: {anomaly_count}"
+        )
+
+        # ------------------------------------------------------------
+        # Decision distribution
+        # ------------------------------------------------------------
+
+        st.markdown(
+            "### Decision Distribution"
+        )
+
+        decision_plot_data = pd.DataFrame(
+            {
+                "Decision": list(
+                    decision_counts.keys()
+                ),
+                "Count": list(
+                    decision_counts.values()
+                ),
+            }
+        )
+
+        decision_plot_data = (
+            decision_plot_data[
+                decision_plot_data["Count"] > 0
+            ]
+        )
+
+        if not decision_plot_data.empty:
+
+            fig = px.pie(
+                decision_plot_data,
+                names="Decision",
+                values="Count",
+                title="Component Screening Decisions",
+                hole=0.35,
+            )
+
+            st.plotly_chart(
+                fig,
+                use_container_width=True,
+            )
+
+        # ------------------------------------------------------------
+        # Prediction charts
+        # ------------------------------------------------------------
+
+        st.markdown(
+            "### 🔮 168h Future Prediction"
+        )
+
+        prediction_columns = [
+            column
+            for column in [
+                "Predicted_Iddq_168h",
+                "Predicted_Leakage_168h",
+                "Predicted_Delay_168h",
+            ]
+            if column in result.columns
+        ]
+
+        if prediction_columns:
+
+            prediction_summary = (
+                result[prediction_columns]
+                .describe()
+                .T
+                .reset_index()
+            )
+
+            prediction_summary = (
+                prediction_summary.rename(
+                    columns={
+                        "index": "Parameter"
+                    }
+                )
+            )
+
+            st.dataframe(
+                prediction_summary,
+                use_container_width=True,
+                hide_index=True,
+            )
+
+        # ------------------------------------------------------------
+        # Detailed results
+        # ------------------------------------------------------------
+
+        st.markdown(
+            "### Detailed Results"
+        )
+
+        st.dataframe(
+            result,
+            use_container_width=True,
+            height=500,
+            hide_index=True,
+        )
+
+
+# ================================================================
+# INVESTIGATION
+# ================================================================
+
+elif page == "🔎 Investigation":
+
+    st.markdown(
+        '<div class="section-title">'
+        'Component Investigation'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+    screening = st.session_state.screening_result
+
+    if screening is None:
+
+        st.warning(
+            "Please run screening before investigating components."
+        )
+
+    else:
+
+        result = screening["result"]
+
+        if "Component_ID" in result.columns:
+
+            component_ids = (
+                result["Component_ID"]
+                .astype(str)
+                .drop_duplicates()
+                .tolist()
+            )
+
+            selected_component = st.selectbox(
+                "Select Component",
+                component_ids,
+            )
+
+            component_engine = get_component_engine()
+
+            component = component_engine.get_component(
+                result,
+                selected_component,
+            )
+
+            selected_rows = result[
+                result["Component_ID"]
+                .astype(str)
+                == str(selected_component)
+            ]
+
+            if selected_rows.empty:
+                st.error("Selected component record could not be found.")
+                st.stop()
+
+            row = selected_rows.iloc[0]
+
+            decision_info = component.get("decision", {}) or {}
+
+            decision = str(
+                decision_info.get(
+                    "decision",
+                    row.get("Risk_Decision", "REVIEW"),
+                )
+            ).strip().upper()
+
+            if decision in {"", "NAN", "NONE"}:
+                decision = str(
+                    row.get("Risk_Decision", "REVIEW")
+                ).strip().upper()
+
+            # --------------------------------------------------------
+            # Component header
+            # --------------------------------------------------------
+
+            st.markdown("### Component Details")
+
+            col1, col2, col3, col4 = st.columns(4)
+
+            with col1:
+                st.metric(
+                    "Component",
+                    selected_component,
+                )
+
+            with col2:
+                st.metric(
+                    "Lot",
+                    component.get(
+                        "lot_id",
+                        row.get("Lot_ID", "N/A"),
+                    ),
+                )
+
+            with col3:
+                st.metric(
+                    "Decision",
+                    decision,
+                )
+
+            with col4:
+
+                risk_column = find_risk_column(selected_rows)
+
+                if risk_column:
+
+                    risk_value = _safe_float(
+                        selected_rows[risk_column].iloc[0]
+                    )
+
+                    if risk_value is not None:
+                        st.metric(
+                            "Risk",
+                            f"{risk_value:.3f}",
+                        )
+
+            # --------------------------------------------------------
+            # Decision message
+            # --------------------------------------------------------
+
+            if decision == "PASS":
+
+                st.success(
+                    "PASS — No significant engineering concern identified."
+                )
+
+            elif decision == "MONITOR":
+
+                st.info(
+                    "MONITOR — Behaviour should be observed for "
+                    "continued drift or abnormality."
+                )
+
+            elif decision in ["REVIEW", "INVESTIGATE"]:
+
+                st.warning(
+                    "REVIEW — Further engineering analysis is recommended."
+                )
+
+            elif decision == "REJECT":
+
+                st.error(
+                    "REJECT — High-risk behaviour or specification concern detected."
+                )
+
+            # --------------------------------------------------------
+            # Parameter intelligence + specification normalization
+            # --------------------------------------------------------
+
+            st.markdown("### Parameter Intelligence")
+
+            parameter_records = []
+
+            for parameter, information in (
+                component.get("parameters", {}) or {}
+            ).items():
+
+                measurements = information.get("measurements", {}) or {}
+
+                parameter_records.append(
+                    {
+                        "Parameter": information.get(
+                            "display_name",
+                            parameter,
+                        ),
+                        "0h": measurements.get("0h"),
+                        "24h": measurements.get("24h"),
+                        "96h": measurements.get("96h"),
+                        "Predicted 168h": measurements.get("168h_predicted"),
+                        "Current Spec": information.get("current_spec_status"),
+                        "Predicted Spec": information.get("predicted_spec_status"),
+                        "Drift %": information.get("drift_percentage"),
+                    }
+                )
+
+            explanation = component.get("explanation", {}) or {}
+            quantitative = explanation.get("quantitative", []) or []
+
+            why = build_quantitative_why(
+                result,
+                row,
+                component,
+                quantitative,
+                decision,
+            )
+
+            # Map the richer quantitative records back to the parameter table.
+            evidence_by_parameter = {
+                str(item.get("parameter", "")).strip(): item
+                for item in why["quantitative"]
+            }
+
+            for record in parameter_records:
+                display_name = str(record["Parameter"]).strip()
+
+                matching = None
+                for parameter_name, evidence in evidence_by_parameter.items():
+                    if str(evidence.get("Parameter", "")).strip() == display_name:
+                        matching = evidence
+                        break
+
+                if matching is not None:
+                    record["Current Spec"] = matching.get(
+                        "current_spec_status",
+                        record.get("Current Spec"),
+                    )
+                    record["Predicted Spec"] = matching.get(
+                        "predicted_spec_status",
+                        record.get("Predicted Spec"),
+                    )
+                    record["Drift %"] = matching.get(
+                        "drift_percent",
+                        record.get("Drift %"),
+                    )
+
+            if parameter_records:
+
+                parameter_df = pd.DataFrame(parameter_records)
+
+                st.dataframe(
+                    parameter_df,
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+                st.caption(
+                    "Specification status is normalized from the registered "
+                    "engineering limits when the component payload reports UNKNOWN."
+                )
+
+            # --------------------------------------------------------
+            # Trend chart
+            # --------------------------------------------------------
+
+            st.markdown("### Measurement / Prediction Trend")
+
+            chart_rows = []
+
+            for parameter, information in (
+                component.get("parameters", {}) or {}
+            ).items():
+
+                display_name = information.get(
+                    "display_name",
+                    parameter,
+                )
+
+                measurements = information.get(
+                    "measurements",
+                    {},
+                ) or {}
+
+                time_points = [
+                    ("0h", measurements.get("0h")),
+                    ("24h", measurements.get("24h")),
+                    ("96h", measurements.get("96h")),
+                    (
+                        "168h Predicted",
+                        measurements.get("168h_predicted"),
+                    ),
+                ]
+
+                for time_label, value in time_points:
+
+                    if value is not None:
+
+                        chart_rows.append(
+                            {
+                                "Parameter": display_name,
+                                "Time": time_label,
+                                "Value": value,
+                            }
+                        )
+
+            if chart_rows:
+
+                chart_df = pd.DataFrame(chart_rows)
+
+                fig = px.line(
+                    chart_df,
+                    x="Time",
+                    y="Value",
+                    color="Parameter",
+                    markers=True,
+                    title="Component Parameter Behaviour",
+                )
+
+                st.plotly_chart(
+                    fig,
+                    use_container_width=True,
+                )
+
+            # --------------------------------------------------------
+            # WHY
+            # --------------------------------------------------------
+
+            st.markdown("### 🧠 WHY?")
+
+            st.info(
+                str(why["primary_reason"])
+            )
+
+            st.markdown("#### Quantitative Engineering Evidence")
+
+            if why["quantitative"]:
+
+                evidence_df = pd.DataFrame(
+                    why["quantitative"]
+                )
+
+                preferred_columns = [
+                    "Parameter",
+                    "current_value",
+                    "unit",
+                    "direction",
+                    "lot_mean",
+                    "lot_median",
+                    "lot_z_score",
+                    "global_z_score",
+                    "anomaly_contribution",
+                    "lot_anomaly_contribution",
+                    "drift_percent",
+                    "drift_risk",
+                    "predicted_168h",
+                    "engineering_limit",
+                    "warning_limit",
+                    "current_spec_status",
+                    "predicted_spec_status",
+                    "engineering_rule",
+                ]
+
+                visible_columns = [
+                    column
+                    for column in preferred_columns
+                    if column in evidence_df.columns
+                ]
+
+                st.dataframe(
+                    evidence_df[visible_columns],
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+            else:
+
+                st.warning(
+                    "No parameter-level quantitative records were returned."
+                )
+
+            # --------------------------------------------------------
+            # Signal summary
+            # --------------------------------------------------------
+
+            st.markdown("#### AI Signal Summary")
+
+            signal_cols = st.columns(4)
+
+            with signal_cols[0]:
+                anomaly_value = why.get("anomaly_risk")
+                st.metric(
+                    "Anomaly Risk",
+                    f"{anomaly_value:.3f}"
+                    if anomaly_value is not None
+                    else "N/A",
+                )
+
+            with signal_cols[1]:
+                lot_anomaly_value = why.get("lot_anomaly_risk")
+                st.metric(
+                    "Lot Anomaly",
+                    f"{lot_anomaly_value:.3f}"
+                    if lot_anomaly_value is not None
+                    else "N/A",
+                )
+
+            with signal_cols[2]:
+                drift_risk_value = why.get("drift_risk")
+                st.metric(
+                    "Drift Risk",
+                    f"{drift_risk_value:.3f}"
+                    if drift_risk_value is not None
+                    else "N/A",
+                )
+
+            with signal_cols[3]:
+                st.metric(
+                    "Risk Level",
+                    why.get("risk_level", "UNKNOWN"),
+                )
+
+            # --------------------------------------------------------
+            # Engineering review + audit
+            # --------------------------------------------------------
+            st.markdown("### 👨‍🔧 Engineering Review")
+
+            final_ui = get_final_ui_engine()
+
+            reviewer = st.text_input(
+                "Reviewer name",
+                key=f"reviewer_{selected_component}",
+            )
+
+            review_action = st.selectbox(
+                "Review Action",
+                [
+                    "ACCEPT",
+                    "MONITOR",
+                    "INVESTIGATE",
+                    "REJECT",
+                ],
+                key=f"review_action_{selected_component}",
+            )
+
+            review_comment = st.text_area(
+                "Review Comment / Justification",
+                key=f"review_comment_{selected_component}",
+                placeholder="Record the engineering reason for this decision.",
+            )
+
+            review_columns = st.columns(2)
+
+            with review_columns[0]:
+                if st.button(
+                    "Save Engineering Review",
+                    key=f"save_review_{selected_component}",
+                    type="primary",
+                ):
+                    if not reviewer.strip():
+                        st.error("Reviewer name is required.")
+                    else:
+                        try:
+                            review_result = final_ui.submit_review(
+                                action=review_action,
+                                reviewer=reviewer,
+                                comments=review_comment,
+                                justification=review_comment,
+                                component_id=selected_component,
+                                lot_id=component.get(
+                                    "lot_id",
+                                    row.get("Lot_ID", ""),
+                                ),
+                                dataset_id=row.get(
+                                    "Dataset_ID",
+                                    "N/A",
+                                ),
+                                dataset_version=row.get(
+                                    "Dataset_Version",
+                                    "N/A",
+                                ),
+                                model_version=row.get(
+                                    "Model_Version",
+                                    "3.0",
+                                ),
+                                specification_version=row.get(
+                                    "Specification_Version",
+                                    "3.0",
+                                ),
+                                configuration_version=row.get(
+                                    "Configuration_Version",
+                                    "3.0",
+                                ),
+                                risk_level=row.get(
+                                    "Risk_Level",
+                                    "UNKNOWN",
+                                ),
+                                risk_score=row.get(
+                                    "Overall_Risk_Score",
+                                    row.get(
+                                        "Overall_Risk_Percentage",
+                                        None,
+                                    ),
+                                ),
+                            )
+
+                            st.session_state[
+                                f"last_review_{selected_component}"
+                            ] = review_result
+
+                            st.success(
+                                f"Engineering review saved: {review_action}"
+                            )
+                        except Exception as error:
+                            st.error(
+                                f"Unable to save engineering review: {error}"
+                            )
+
+            with review_columns[1]:
+                if st.button(
+                    "Refresh Review History",
+                    key=f"refresh_review_{selected_component}",
+                ):
+                    st.session_state[
+                        f"refresh_review_state_{selected_component}"
+                    ] = datetime.now().isoformat()
+
+            latest_review = final_ui.review_summary(
+                component_id=selected_component,
+            )
+
+            if latest_review.get("status") != "NO_REVIEW_DATA":
+                st.markdown("#### Latest Audit Entry")
+                latest_df = pd.DataFrame(
+                    [
+                        {
+                            "Action": latest_review.get(
+                                "action",
+                                "N/A",
+                            ),
+                            "Reviewer": latest_review.get(
+                                "reviewer",
+                                "N/A",
+                            ),
+                            "Comment": latest_review.get(
+                                "comment",
+                                latest_review.get(
+                                    "justification",
+                                    "",
+                                ),
+                            ),
+                            "Timestamp UTC": latest_review.get(
+                                "review_timestamp_utc",
+                                "N/A",
+                            ),
+                        }
+                    ]
+                )
+                st.dataframe(
+                    latest_df,
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+            # --------------------------------------------------------
+            # Raw component record
+            # --------------------------------------------------------
+
+            with st.expander(
+                "View Complete Component Record"
+            ):
+
+                st.dataframe(
+                    selected_rows.T,
+                    use_container_width=True,
+                )
+
+                st.markdown("**AI quantitative explanation used for this investigation:**")
+                st.write(why["primary_reason"])
+
+        else:
+
+            st.warning(
+                "Component_ID is not available in this dataset."
+            )
+
+
+# ================================================================
+
+
+elif page == "📥 Reports":
+
+    st.markdown(
+        '<div class="section-title">'
+        'Engineering Screening Reports'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+    screening = st.session_state.screening_result
+
+    if screening is None:
+        st.warning(
+            "No report available. Run AI screening first."
+        )
+
+    else:
+        result = screening["result"]
+        domain_result = st.session_state.domain_result or {}
+        quality_result = st.session_state.quality_result or {}
+
+        final_ui = get_final_ui_engine()
+
+        domain = domain_result.get(
+            "domain",
+            "general_unknown",
+        )
+
+        dataset_id = "N/A"
+        dataset_version = "N/A"
+
+        if "Dataset_ID" in result.columns and len(result) > 0:
+            dataset_id = str(result["Dataset_ID"].iloc[0])
+
+        if "Dataset_Version" in result.columns and len(result) > 0:
+            dataset_version = str(result["Dataset_Version"].iloc[0])
+
+        integrated_report = None
+
+        try:
+            integrated_report = final_ui.integrated_report(
+                result,
+                domain=domain,
+                screening_status=screening.get(
+                    "screening_status",
+                    "SCREENED",
+                ),
+                dataset_id=dataset_id,
+                dataset_version=dataset_version,
+                model_version="3.0",
+                specification_version="3.0",
+                configuration_version="3.0",
+                data_quality=quality_result,
+            )
+        except Exception as error:
+            st.error(
+                f"Unable to build report metadata: {error}"
+            )
+
+        if integrated_report is not None:
+            summary = (
+                integrated_report
+                .get("summary", {})
+                .get("screening", {})
+            )
+
+            st.success(
+                "Judge-ready screening report is ready."
+            )
+
+            col1, col2, col3, col4, col5 = st.columns(5)
+
+            with col1:
+                st.metric(
+                    "Components",
+                    summary.get("rows", len(result)),
+                )
+
+            with col2:
+                st.metric(
+                    "Anomalies",
+                    summary.get("anomaly_count", 0),
+                )
+
+            with col3:
+                st.metric(
+                    "168h Predictions",
+                    summary.get("prediction_count", 0),
+                )
+
+            with col4:
+                st.metric(
+                    "Current Violations",
+                    summary.get(
+                        "current_spec_violation_count",
+                        0,
+                    ),
+                )
+
+            with col5:
+                st.metric(
+                    "Predicted Violations",
+                    summary.get(
+                        "predicted_spec_violation_count",
+                        0,
+                    ),
+                )
+
+            st.markdown("### Report Metadata")
+
+            metadata = integrated_report.get(
+                "metadata",
+                {},
+            )
+
+            metadata_rows = []
+
+            for section_name, section in metadata.items():
+                if isinstance(section, dict):
+                    for field, value in section.items():
+                        if isinstance(value, (dict, list)):
+                            value = str(value)
+
+                        metadata_rows.append(
+                            {
+                                "Field": f"{section_name}.{field}",
+                                "Value": str(value),
+                            }
+                        )
+                else:
+                    metadata_rows.append(
+                        {
+                            "Field": str(section_name),
+                            "Value": str(section),
+                        }
+                    )
+
+            if metadata_rows:
+                st.dataframe(
+                    pd.DataFrame(metadata_rows),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+            st.markdown("### Download")
+
+            timestamp = datetime.now().strftime(
+                "%Y%m%d_%H%M%S"
+            )
+
+            csv_bytes = final_ui.export_csv_bytes(
+                result,
+                summary=integrated_report.get(
+                    "summary",
+                    {},
+                ),
+            )
+
+            st.download_button(
+                label="📥 Download Results CSV",
+                data=csv_bytes,
+                file_name=(
+                    f"SIH26170_screening_{timestamp}.csv"
+                ),
+                mime="text/csv",
+                use_container_width=True,
+            )
+
+            json_bytes = final_ui.export_json_bytes(
+                integrated_report,
+            )
+
+            st.download_button(
+                label="🧾 Download JSON Report",
+                data=json_bytes,
+                file_name=(
+                    f"SIH26170_screening_{timestamp}.json"
+                ),
+                mime="application/json",
+                use_container_width=True,
+            )
+
+            try:
+                excel_bytes = final_ui.export_excel_bytes(
+                    result,
+                    summary=integrated_report.get(
+                        "summary",
+                        {},
+                    ),
+                )
+
+                st.download_button(
+                    label="📊 Download Excel Report",
+                    data=excel_bytes,
+                    file_name=(
+                        f"SIH26170_screening_{timestamp}.xlsx"
+                    ),
+                    mime=(
+                        "application/vnd.openxmlformats-officedocument."
+                        "spreadsheetml.sheet"
+                    ),
+                    use_container_width=True,
+                )
+
+            except Exception as error:
+                st.warning(
+                    "Excel export unavailable. Install openpyxl "
+                    "in the project environment to enable XLSX export. "
+                    f"Details: {error}"
+                )
+
+            st.markdown("### Investigation Queue")
+
+            queue = final_ui.investigation_queue(
+                result,
+                limit=50,
+            )
+
+            if queue.empty:
+                st.success(
+                    "No records currently require investigation."
+                )
+            else:
+                st.dataframe(
+                    queue,
+                    use_container_width=True,
+                    height=350,
+                    hide_index=True,
+                )
+
+
+
+# FOOTER
+# ================================================================
+
+st.divider()
+
+st.markdown(
+    '<div class="footer">'
+    'AI-Driven Anomaly Detection in Component Burn-In & Screening'
+    '<br>'
+    'SIH26170 | Intelligent Burn-In Screening Prototype'
+    '<br><br>'
+    'Engineering screening results require appropriate validation '
+    'and qualified engineering specifications before production use.'
+    '</div>',
+    unsafe_allow_html=True,
+)

@@ -1,0 +1,207 @@
+[1mdiff --git a/main.py b/main.py[m
+[1mindex 7c8a6e2..106c3b6 100644[m
+[1m--- a/main.py[m
+[1m+++ b/main.py[m
+[36m@@ -1,1025 +1,707 @@[m
+[31m-from pathlib import Path[m
+[32m+[m[32mimport os[m
+[32m+[m[32mfrom datetime import datetime[m
+ [m
+ import pandas as pd[m
+ [m
+[31m-from utils.data_loader import DataLoader[m
+[31m-from utils.data_preprocessor import DataPreprocessor[m
+[31m-from utils.config_loader import ConfigLoader[m
+[31m-[m
+ from modules.data_validator import DataValidator[m
+[31m-from modules.specification_engine import SpecificationEngine[m
+ from modules.anomaly_detector import AnomalyDetector[m
+ from modules.drift_predictor import DriftPredictor[m
+ from modules.risk_fusion import RiskFusion[m
+[32m+[m[32mfrom modules.specification_engine import SpecificationEngine[m
+[32m+[m[32mfrom modules.explainability_engine import ExplainabilityEngine[m
+[32m+[m
+[32m+[m[32mfrom utils.config_loader import ConfigLoader[m
+[32m+[m[32mfrom utils.data_loader import DataLoader[m
+[32m+[m[32mfrom utils.data_preprocessor import DataPreprocessor[m
+[32m+[m
+[32m+[m
+[32m+[m[32mPIPELINE_VERSION = "2.2"[m
+ [m
+ [m
+ class ScreeningPipeline:[m
+     """[m
+[31m-    AI-Assisted Adaptive Component Screening Pipeline[m
+[31m-[m
+[31m-    Complete workflow:[m
+[31m-[m
+[31m-        Data Loading[m
+[31m-            ↓[m
+[31m-        Preprocessing[m
+[31m-            ↓[m
+[31m-        Data Validation[m
+[31m-            ↓[m
+[31m-        Current Engineering Specification Check[m
+[31m-            ↓[m
+[31m-        AI Anomaly Detection[m
+[31m-            ↓[m
+[31m-        Multi-Parameter Drift Prediction[m
+[31m-            ↓[m
+[31m-        Predicted 168h Engineering Specification Check[m
+[31m-            ↓[m
+[31m-        Risk Fusion[m
+[31m-            ↓[m
+[31m-        Final Decision[m
+[31m-            ↓[m
+[31m-        Save Results + Model Metrics[m
+[31m-[m
+[31m-    Final decisions:[m
+[31m-        PASS[m
+[31m-        INVESTIGATE[m
+[31m-        REJECT[m
+[31m-[m
+[31m-    Important:[m
+[31m-        Actual 168h measurements are retained for retrospective[m
+[31m-        validation/reference.[m
+[31m-[m
+[31m-        Predicted 168h values are used for future-oriented screening.[m
+[31m-    """[m
+[32m+[m[32m    Main AI screening pipeline for SIH26170.[m
+ [m
+[31m-    # =========================================================[m
+[31m-    # INITIALIZATION[m
+[31m-    # =========================================================[m
+[32m+[m[32m    Supports:[m
+[32m+[m[32m        1. Training / Evaluation Mode[m
+[32m+[m[32m        2. Live / Future Screening Mode[m
+ [m
+[31m-    def __init__(self, config_dir="config"):[m
+[32m+[m[32m    Training Mode:[m
+[32m+[m[32m        Historical 168h data is used to train and evaluate prediction models.[m
+ [m
+[31m-        # -----------------------------------------------------[m
+[31m-        # Configuration[m
+[31m-        # -----------------------------------------------------[m
+[32m+[m[32m    Live Mode:[m
+[32m+[m[32m        0h + 24h measurements are used for early prediction.[m
+[32m+[m[32m        96h measurement can optionally be used for full prediction.[m
+[32m+[m[32m        Actual 168h value is not required.[m
+[32m+[m[32m    """[m
+ [m
+[31m-        self.config_loader = ConfigLoader(config_dir)[m
+[32m+[m[32m    def __init__(self):[m
+[32m+[m[32m        self.config_loader = ConfigLoader()[m
+ [m
+[31m-        self.pipeline_config = ([m
+[31m-            self.config_loader.load_pipeline_config()[m
+[32m+[m[32m        self.pipeline_config = self.config_loader.load([m
+[32m+[m[32m            "config/pipeline_config.json"[m
+         )[m
+ [m
+[31m-        self.specifications = ([m
+[31m-            self.config_loader.load_specifications()[m
+[32m+[m[32m        self.specifications = self.config_loader.load([m
+[32m+[m[32m            "config/specifications.json"[m
+         )[m
+ [m
+[31m-        # -----------------------------------------------------[m
+[31m-        # Core utilities[m
+[31m-        # -----------------------------------------------------[m
+[31m-[m
+         self.data_loader = DataLoader()[m
+[31m-[m
+         self.preprocessor = DataPreprocessor()[m
+ [m
+         self.validator = DataValidator()[m
+[31m-[m
+[31m-        # -----------------------------------------------------[m
+[31m-        # Specification Engine[m
+[31m-        # -----------------------------------------------------[m
+[31m-[m
+[31m-        self.specification_engine = SpecificationEngine([m
+[31m-            self.specifications.get([m
+[31m-                "electronics",[m
+[31m-                {}[m
+[31m-            )[m
+[32m+[m[32m        self.anomaly_detector = AnomalyDetector([m
+[32m+[m[32m            self.pipeline_config.get("anomaly_detection", {})[m
+         )[m
+ [m
+[31m-        # -----------------------------------------------------[m
+[31m-        # Anomaly Detector[m
+[31m-        # -----------------------------------------------------[m
+[31m-[m
+[31m-        anomaly_config = self.pipeline_config.get([m
+[31m-            "anomaly_detection",[m
+[31m-            {}[m
+[32m+[m[32m        self.drift_predictor = DriftPredictor([m
+[32m+[m[32m            self.pipeline_config.get("drift_prediction", {})[m
+         )[m
+ [m
+[31m-        self.anomaly_detector = AnomalyDetector([m
+[31m-            contamination=anomaly_config.get([m
+[31m-                "contamination",[m
+[31m-                0.15[m
+[31m-            ),[m
+[31m-            n_estimators=anomaly_config.get([m
+[31m-                "n_estimators",[m
+[31m-                200[m
+[31m-            ),[m
+[31m-            random_state=anomaly_config.get([m
+[31m-                "random_state",[m
+[31m-                42[m
+[31m-            )[m
+[32m+[m[32m        self.risk_fusion = RiskFusion([m
+[32m+[m[32m            self.pipeline_config.get("risk_fusion", {})[m
+         )[m
+ [m
+[31m-        # -----------------------------------------------------[m
+[31m-        # Drift Predictor[m
+[31m-        # -----------------------------------------------------[m
+[31m-[m
+[31m-        drift_config = self.pipeline_config.get([m
+[31m-            "drift_prediction",[m
+[31m-            {}[m
+[32m+[m[32m        self.specification_engine = SpecificationEngine([m
+[32m+[m[32m            self.specifications[m
+         )[m
+ [m
+[31m-        self.drift_predictor = DriftPredictor([m
+[31m-            random_state=drift_config.get([m
+[31m-                "random_state",[m
+[31m-                42[m
+[31m-            )[m
+[32m+[m[32m        self.explainability_engine = ExplainabilityEngine([m
+[32m+[m[32m            self.specifications.get("electronics", {})[m
+         )[m
+ [m
+[31m-        # -----------------------------------------------------[m
+[31m-        # Risk Fusion[m
+[31m-        # -----------------------------------------------------[m
+[32m+[m[32m    # ============================================================[m
+[32m+[m[32m    # DATA PREPARATION[m
+[32m+[m[32m    # ============================================================[m
+ [m
+[31m-        risk_config = self.pipeline_config.get([m
+[31m-            "risk_fusion",[m
+[31m-            {}[m
+[31m-        )[m
+[32m+[m[32m    def prepare_data(self, data):[m
+[32m+[m[32m        """Validate and preprocess input data."""[m
+ [m
+[31m-        self.risk_fusion = RiskFusion([m
+[31m-            anomaly_weight=risk_config.get([m
+[31m-                "anomaly_weight",[m
+[31m-                0.5[m
+[31m-            ),[m
+[31m-            drift_weight=risk_config.get([m
+[31m-                "drift_weight",[m
+[31m-                0.5[m
+[31m-            ),[m
+[31m-            investigate_threshold=risk_config.get([m
+[31m-                "investigate_threshold",[m
+[31m-                0.25[m
+[31m-            ),[m
+[31m-            reject_threshold=risk_config.get([m
+[31m-                "reject_threshold",[m
+[31m-   

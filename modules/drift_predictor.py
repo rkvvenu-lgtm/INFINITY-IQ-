@@ -1,379 +1,822 @@
-import pandas as pd
-import numpy as np
+from __future__ import annotations
 
+from typing import Any, Dict, Optional
+
+import numpy as np
+import pandas as pd
+from sklearn.ensemble import GradientBoostingRegressor, RandomForestRegressor
 from sklearn.linear_model import LinearRegression
-from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-from sklearn.model_selection import train_test_split
+
+from models.model_manager import ModelManager
 
 
 class DriftPredictor:
     """
-    Predict parameter drift using candidate regression models.
+    Future drift prediction engine.
 
-    Candidate models:
-    - Linear Regression
-    - Random Forest
-    - Gradient Boosting
+    Training:
+        Historical 168h measurements are used as targets.
 
-    The model with the lowest MAE on unseen test data
-    is selected for each parameter.
+    Live screening:
+        Available earlier measurements are used to predict
+        the unseen 168h value.
+
+    The class supports:
+        - Linear Regression
+        - Random Forest
+        - Gradient Boosting
+        - Early feature set
+        - Full feature set
+        - MAE
+        - RMSE
+        - R2
+        - Model selection
+        - Model persistence through ModelManager
     """
 
-    def __init__(self, random_state=42):
+    PREDICTOR_VERSION = "3.0"
+
+    def __init__(
+        self,
+        model_manager: Optional[ModelManager] = None,
+        random_state: int = 42,
+    ):
+        self.model_manager = (
+            model_manager
+            if model_manager is not None
+            else ModelManager()
+        )
 
         self.random_state = random_state
-        self.models = {}
-        self.selected_models = {}
 
-    def _create_models(self):
+    # ============================================================
+    # MODEL CREATION
+    # ============================================================
 
-        return {
-            "LinearRegression": LinearRegression(),
+    def _create_model(
+        self,
+        model_name: str,
+    ) -> Any:
 
-            "RandomForest": RandomForestRegressor(
+        name = str(
+            model_name
+        ).strip().lower()
+
+        if name == "linear regression":
+            return LinearRegression()
+
+        if name == "random forest":
+            return RandomForestRegressor(
                 n_estimators=200,
-                random_state=self.random_state
-            ),
+                random_state=self.random_state,
+                n_jobs=-1,
+                max_depth=None,
+            )
 
-            "GradientBoosting": GradientBoostingRegressor(
-                n_estimators=200,
+        if name == "gradient boosting":
+            return GradientBoostingRegressor(
+                n_estimators=150,
                 learning_rate=0.05,
                 max_depth=3,
-                random_state=self.random_state
+                random_state=self.random_state,
             )
-        }
 
-    def _prepare_features(self, data, feature_columns):
+        raise ValueError(
+            f"Unsupported model: {model_name}"
+        )
+
+    # ============================================================
+    # DATA PREPARATION
+    # ============================================================
+
+    @staticmethod
+    def _numeric_frame(
+        data: pd.DataFrame,
+        columns: list[str],
+    ) -> pd.DataFrame:
+
+        frame = data.copy()
 
         missing = [
             column
-            for column in feature_columns
-            if column not in data.columns
+            for column in columns
+            if column not in frame.columns
         ]
 
         if missing:
             raise ValueError(
-                f"Missing feature columns: {missing}"
+                "Missing feature columns: "
+                + ", ".join(missing)
             )
 
-        X = data[feature_columns].copy()
-
-        for column in feature_columns:
-            X[column] = pd.to_numeric(
-                X[column],
-                errors="coerce"
+        for column in columns:
+            frame[column] = pd.to_numeric(
+                frame[column],
+                errors="coerce",
             )
 
-        X = X.fillna(X.median())
+        return frame
 
-        return X
-
-    def compare_models(
+    def _prepare_training_data(
         self,
-        data,
-        feature_columns,
-        target_column
+        data: pd.DataFrame,
+        parameter: str,
+        feature_set: str,
     ):
-        """
-        Compare regression models using an unseen test set.
-        """
 
-        if target_column not in data.columns:
+        features = self._get_features(
+            parameter,
+            feature_set,
+        )
+
+        target = self.model_manager.get_target_column(
+            parameter
+        )
+
+        if not target:
             raise ValueError(
-                f"Target column not found: {target_column}"
+                f"No target column registered for {parameter}"
             )
 
-        X = self._prepare_features(
+        frame = self._numeric_frame(
             data,
-            feature_columns
+            features + [target],
         )
 
-        y = pd.to_numeric(
-            data[target_column],
-            errors="coerce"
+        frame = frame.dropna(
+            subset=features + [target]
         )
 
-        valid_rows = y.notna()
-
-        X = X.loc[valid_rows]
-        y = y.loc[valid_rows]
-
-        if len(X) < 10:
+        if frame.empty:
             raise ValueError(
-                f"Not enough valid samples for {target_column}."
+                f"No valid training rows for {parameter}"
             )
 
-        X_train, X_test, y_train, y_test = train_test_split(
-            X,
-            y,
-            test_size=0.20,
-            random_state=self.random_state
+        X = frame[features]
+        y = frame[target]
+
+        return X, y
+
+    def _prepare_prediction_data(
+        self,
+        data: pd.DataFrame,
+        parameter: str,
+        feature_set: str,
+    ) -> pd.DataFrame:
+
+        features = self._get_features(
+            parameter,
+            feature_set,
         )
 
-        model_results = []
+        frame = self._numeric_frame(
+            data,
+            features,
+        )
 
-        for model_name, model in self._create_models().items():
+        return frame[features]
 
-            model.fit(
-                X_train,
-                y_train
+    def _get_features(
+        self,
+        parameter: str,
+        feature_set: str,
+    ) -> list[str]:
+
+        normalized = str(
+            feature_set
+        ).strip().lower()
+
+        if normalized == "early":
+            features = (
+                self.model_manager
+                .get_early_features(parameter)
             )
 
-            prediction = model.predict(
-                X_test
+        elif normalized == "full":
+            features = (
+                self.model_manager
+                .get_full_features(parameter)
             )
 
-            mae = mean_absolute_error(
-                y_test,
-                prediction
+        else:
+            raise ValueError(
+                "feature_set must be "
+                "'early' or 'full'."
             )
 
-            rmse = np.sqrt(
+        if not features:
+            raise ValueError(
+                f"No {feature_set} features registered "
+                f"for {parameter}"
+            )
+
+        return features
+
+    # ============================================================
+    # METRICS
+    # ============================================================
+
+    @staticmethod
+    def _calculate_metrics(
+        y_true,
+        y_pred,
+    ) -> Dict[str, float]:
+
+        mae = mean_absolute_error(
+            y_true,
+            y_pred,
+        )
+
+        rmse = float(
+            np.sqrt(
                 mean_squared_error(
-                    y_test,
-                    prediction
+                    y_true,
+                    y_pred,
                 )
             )
-
-            r2 = r2_score(
-                y_test,
-                prediction
-            )
-
-            model_results.append({
-                "Parameter": target_column,
-                "Model": model_name,
-                "MAE": mae,
-                "RMSE": rmse,
-                "R2": r2
-            })
-
-        results = pd.DataFrame(
-            model_results
         )
 
-        best_row = results.loc[
-            results["MAE"].idxmin()
+        if len(
+            np.unique(y_true)
+        ) > 1:
+
+            r2 = r2_score(
+                y_true,
+                y_pred,
+            )
+
+        else:
+            r2 = float("nan")
+
+        return {
+            "MAE": float(mae),
+            "RMSE": float(rmse),
+            "R2": float(r2),
+        }
+
+    # ============================================================
+    # MODEL EVALUATION
+    # ============================================================
+
+    def evaluate_model(
+        self,
+        data: pd.DataFrame,
+        parameter: str,
+        feature_set: str,
+        model_name: str,
+        validation_fraction: float = 0.2,
+    ) -> Dict[str, Any]:
+
+        X, y = self._prepare_training_data(
+            data,
+            parameter,
+            feature_set,
+        )
+
+        minimum_samples = (
+            self.model_manager
+            .get_minimum_training_samples()
+        )
+
+        if len(X) < minimum_samples:
+            raise ValueError(
+                f"{parameter}/{feature_set} has "
+                f"{len(X)} samples; "
+                f"minimum required is "
+                f"{minimum_samples}."
+            )
+
+        if not (
+            0.05
+            <= validation_fraction
+            <= 0.5
+        ):
+            raise ValueError(
+                "validation_fraction must "
+                "be between 0.05 and 0.50."
+            )
+
+        split_index = int(
+            len(X)
+            * (1.0 - validation_fraction)
+        )
+
+        split_index = max(
+            1,
+            min(
+                split_index,
+                len(X) - 1,
+            ),
+        )
+
+        X_train = X.iloc[
+            :split_index
         ]
 
-        self.selected_models[
-            target_column
-        ] = best_row["Model"]
+        X_valid = X.iloc[
+            split_index:
+        ]
+
+        y_train = y.iloc[
+            :split_index
+        ]
+
+        y_valid = y.iloc[
+            split_index:
+        ]
+
+        model = self._create_model(
+            model_name
+        )
+
+        model.fit(
+            X_train,
+            y_train,
+        )
+
+        predictions = model.predict(
+            X_valid
+        )
+
+        metrics = self._calculate_metrics(
+            y_valid,
+            predictions,
+        )
+
+        return {
+            "parameter": parameter,
+            "feature_set": feature_set,
+            "model_name": model_name,
+            "training_samples": int(
+                len(X_train)
+            ),
+            "validation_samples": int(
+                len(X_valid)
+            ),
+            "metrics": metrics,
+            "features": list(
+                X.columns
+            ),
+            "model": model,
+        }
+
+    # ============================================================
+    # MODEL SELECTION
+    # ============================================================
+
+    def select_best_model(
+        self,
+        data: pd.DataFrame,
+        parameter: str,
+        feature_set: str,
+    ) -> Dict[str, Any]:
+
+        allowed_models = (
+            self.model_manager
+            .get_allowed_models()
+        )
+
+        if not allowed_models:
+            raise ValueError(
+                "No models are configured."
+            )
+
+        results = []
+
+        for model_name in allowed_models:
+
+            result = self.evaluate_model(
+                data=data,
+                parameter=parameter,
+                feature_set=feature_set,
+                model_name=model_name,
+            )
+
+            results.append(
+                result
+            )
+
+        selection_metric = (
+            self.model_manager
+            .get_selection_metric()
+        ).upper()
+
+        if selection_metric not in {
+            "MAE",
+            "RMSE",
+        }:
+            selection_metric = "MAE"
+
+        best = min(
+            results,
+            key=lambda item: (
+                item["metrics"]
+                .get(
+                    selection_metric,
+                    float("inf"),
+                )
+            ),
+        )
+
+        return {
+            "best_model": best,
+            "all_models": [
+                {
+                    "model_name": item[
+                        "model_name"
+                    ],
+                    "metrics": item[
+                        "metrics"
+                    ],
+                }
+                for item in results
+            ],
+            "selection_metric": (
+                selection_metric
+            ),
+        }
+
+    # ============================================================
+    # TRAIN AND SAVE
+    # ============================================================
+
+    def train_and_save(
+        self,
+        data: pd.DataFrame,
+        parameter: str,
+        feature_set: str,
+    ) -> Dict[str, Any]:
+
+        selection = (
+            self.select_best_model(
+                data=data,
+                parameter=parameter,
+                feature_set=feature_set,
+            )
+        )
+
+        best = selection[
+            "best_model"
+        ]
+
+        features = self._get_features(
+            parameter,
+            feature_set,
+        )
+
+        target = (
+            self.model_manager
+            .get_target_column(parameter)
+        )
+
+        X, y = self._prepare_training_data(
+            data,
+            parameter,
+            feature_set,
+        )
+
+        final_model = self._create_model(
+            best["model_name"]
+        )
+
+        final_model.fit(
+            X,
+            y,
+        )
+
+        metadata = {
+            "predictor_version": (
+                self.PREDICTOR_VERSION
+            ),
+            "model_type": (
+                best["model_name"]
+            ),
+            "feature_set": feature_set,
+            "features": features,
+            "target_column": target,
+            "training_samples": int(
+                len(X)
+            ),
+            "validation_metrics": (
+                best["metrics"]
+            ),
+            "all_model_metrics": (
+                selection["all_models"]
+            ),
+            "selection_metric": (
+                selection["selection_metric"]
+            ),
+            "target_horizon_hours": 168,
+        }
+
+        path = (
+            self.model_manager.save_model(
+                model=final_model,
+                parameter=parameter,
+                feature_set=feature_set,
+                metadata=metadata,
+            )
+        )
+
+        return {
+            "parameter": parameter,
+            "feature_set": feature_set,
+            "model_name": best[
+                "model_name"
+            ],
+            "model_path": str(path),
+            "features": features,
+            "target": target,
+            "metrics": best[
+                "metrics"
+            ],
+            "all_models": selection[
+                "all_models"
+            ],
+            "training_samples": int(
+                len(X)
+            ),
+        }
+
+    # ============================================================
+    # TRAIN ALL PARAMETERS
+    # ============================================================
+
+    def train_all(
+        self,
+        data: pd.DataFrame,
+        feature_sets: Optional[list[str]] = None,
+    ) -> Dict[str, Any]:
+
+        if feature_sets is None:
+            feature_sets = [
+                "early",
+                "full",
+            ]
+
+        results = {}
+
+        for parameter in (
+            self.model_manager
+            .get_enabled_parameters()
+        ):
+
+            results[parameter] = {}
+
+            for feature_set in feature_sets:
+
+                results[
+                    parameter
+                ][feature_set] = (
+                    self.train_and_save(
+                        data=data,
+                        parameter=parameter,
+                        feature_set=feature_set,
+                    )
+                )
 
         return results
 
-    def train_best_model(
+    # ============================================================
+    # FUTURE PREDICTION
+    # ============================================================
+
+    def predict_future(
         self,
-        data,
-        feature_columns,
-        target_column
-    ):
-        """
-        Train the selected model using the complete
-        available dataset after model selection.
-        """
+        data: pd.DataFrame,
+        parameter: str,
+        feature_set: str = "early",
+        require_saved_model: bool = True,
+    ) -> Dict[str, Any]:
 
-        if target_column not in self.selected_models:
+        features = self._get_features(
+            parameter,
+            feature_set,
+        )
 
-            self.compare_models(
-                data,
-                feature_columns,
-                target_column
+        prediction_column = (
+            self.model_manager
+            .get_prediction_column(
+                parameter
+            )
+        )
+
+        if not prediction_column:
+            raise ValueError(
+                f"No prediction column registered "
+                f"for {parameter}"
             )
 
-        selected_name = self.selected_models[
-            target_column
-        ]
-
-        models = self._create_models()
-
-        model = models[selected_name]
-
-        X = self._prepare_features(
+        X = self._prepare_prediction_data(
             data,
-            feature_columns
+            parameter,
+            feature_set,
         )
 
-        y = pd.to_numeric(
-            data[target_column],
-            errors="coerce"
-        )
-
-        valid_rows = y.notna()
-
-        X = X.loc[valid_rows]
-        y = y.loc[valid_rows]
-
-        model.fit(
-            X,
-            y
-        )
-
-        self.models[
-            target_column
-        ] = model
-
-        return model
-
-    def predict(
-        self,
-        data,
-        feature_columns,
-        target_column
-    ):
-        """
-        Predict the target parameter.
-        """
-
-        if target_column not in self.models:
-
-            self.train_best_model(
-                data,
-                feature_columns,
-                target_column
+        if X.empty:
+            raise ValueError(
+                f"No valid prediction rows for {parameter}"
             )
 
-        X = self._prepare_features(
-            data,
-            feature_columns
+        model_exists = (
+            self.model_manager
+            .model_exists(
+                parameter,
+                feature_set,
+            )
         )
 
-        model = self.models[
-            target_column
-        ]
+        if require_saved_model:
 
-        return model.predict(X)
+            if not model_exists:
+                raise FileNotFoundError(
+                    f"No trained model available for "
+                    f"{parameter}/{feature_set}."
+                )
 
-    def calculate_drift(
+            model = (
+                self.model_manager
+                .load_model(
+                    parameter,
+                    feature_set,
+                )
+            )
+
+        else:
+
+            model = None
+
+        if model is None:
+            raise ValueError(
+                "A trained model is required "
+                "for future prediction."
+            )
+
+        predictions = model.predict(
+            X
+        )
+
+        output = data.copy()
+
+        output[
+            prediction_column
+        ] = np.nan
+
+        valid_index = X.index
+
+        output.loc[
+            valid_index,
+            prediction_column,
+        ] = predictions
+
+        return {
+            "data": output,
+            "parameter": parameter,
+            "feature_set": feature_set,
+            "features": features,
+            "prediction_column": (
+                prediction_column
+            ),
+            "prediction_horizon_hours": 168,
+            "prediction_count": int(
+                len(predictions)
+            ),
+            "model_metadata": (
+                self.model_manager
+                .get_model_metadata(
+                    parameter,
+                    feature_set,
+                )
+            ),
+        }
+
+    # ============================================================
+    # PREDICT ALL
+    # ============================================================
+
+    def predict_all(
         self,
-        current_value,
-        predicted_value
-    ):
-        """
-        Calculate relative drift.
+        data: pd.DataFrame,
+        feature_set: str = "early",
+    ) -> Dict[str, Any]:
 
-        Positive value  -> parameter increased
-        Negative value  -> parameter decreased
-        """
+        output = data.copy()
+        results = {}
 
-        current_value = np.asarray(
-            current_value,
-            dtype=float
-        )
+        for parameter in (
+            self.model_manager
+            .get_enabled_parameters()
+        ):
 
-        predicted_value = np.asarray(
-            predicted_value,
-            dtype=float
-        )
+            result = self.predict_future(
+                data=output,
+                parameter=parameter,
+                feature_set=feature_set,
+            )
 
-        denominator = np.where(
-            np.abs(current_value) < 1e-12,
-            np.nan,
-            current_value
-        )
+            output = result[
+                "data"
+            ]
 
-        drift = (
-            predicted_value - current_value
-        ) / denominator
+            results[parameter] = result
 
-        return np.nan_to_num(
-            drift,
-            nan=0.0,
-            posinf=1.0,
-            neginf=-1.0
-        )
+        return {
+            "data": output,
+            "feature_set": feature_set,
+            "parameters": results,
+        }
 
-    def generate_drift_risk(
+    # ============================================================
+    # PREDICTION QUALITY
+    # ============================================================
+
+    def get_prediction_quality(
         self,
-        data,
-        current_column,
-        predicted_column,
-        warning_threshold=0.20,
-        reject_threshold=0.40
-    ):
-        """
-        Convert predicted drift into a risk level.
-        """
+        parameter: str,
+        feature_set: str,
+    ) -> Dict[str, Any]:
 
-        result = data.copy()
-
-        drift = self.calculate_drift(
-            result[current_column],
-            result[predicted_column]
+        metadata = (
+            self.model_manager
+            .get_model_metadata(
+                parameter,
+                feature_set,
+            )
         )
 
-        result["Drift_Rate"] = drift
+        if not metadata:
+            return {
+                "available": False,
+                "parameter": parameter,
+                "feature_set": feature_set,
+            }
 
-        absolute_drift = np.abs(
-            result["Drift_Rate"]
+        metrics = metadata.get(
+            "validation_metrics",
+            {}
         )
 
-        result["Drift_Risk"] = np.clip(
-            absolute_drift / reject_threshold,
-            0.0,
-            1.0
-        )
+        return {
+            "available": True,
+            "parameter": parameter,
+            "feature_set": feature_set,
+            "model_name": metadata.get(
+                "model_type"
+            ),
+            "MAE": metrics.get(
+                "MAE"
+            ),
+            "RMSE": metrics.get(
+                "RMSE"
+            ),
+            "R2": metrics.get(
+                "R2"
+            ),
+            "training_samples": metadata.get(
+                "training_samples"
+            ),
+            "prediction_horizon_hours": (
+                metadata.get(
+                    "target_horizon_hours",
+                    168,
+                )
+            ),
+        }
 
-        result["Drift_Status"] = np.select(
-            [
-                absolute_drift >= reject_threshold,
-                absolute_drift >= warning_threshold
-            ],
-            [
-                "HIGH_RISK",
-                "EARLY_WARNING"
-            ],
-            default="NORMAL"
-        )
+    # ============================================================
+    # MODEL INFORMATION
+    # ============================================================
 
-        return result
-
-    def run(
+    def get_model_info(
         self,
-        data,
-        feature_columns,
-        target_column,
-        current_column,
-        warning_threshold=0.20,
-        reject_threshold=0.40
-    ):
-        """
-        Complete drift prediction pipeline.
-        """
+        parameter: Optional[str] = None,
+    ) -> Dict[str, Any]:
 
-        result = data.copy()
+        if parameter:
 
-        # Compare candidate models
-        comparison = self.compare_models(
-            result,
-            feature_columns,
-            target_column
-        )
+            return {
+                "parameter": parameter,
+                "early": (
+                    self.model_manager
+                    .get_model_status(
+                        parameter
+                    )["early"]
+                ),
+                "full": (
+                    self.model_manager
+                    .get_model_status(
+                        parameter
+                    )["full"]
+                ),
+            }
 
-        # Train selected model
-        self.train_best_model(
-            result,
-            feature_columns,
-            target_column
-        )
-
-        # Predict future parameter
-        result[
-            "Predicted_" + target_column
-        ] = self.predict(
-            result,
-            feature_columns,
-            target_column
-        )
-
-        # Calculate drift risk
-        result = self.generate_drift_risk(
-            result,
-            current_column,
-            "Predicted_" + target_column,
-            warning_threshold,
-            reject_threshold
-        )
-
-        return result, comparison
+        return {
+            parameter: self.get_model_info(
+                parameter
+            )
+            for parameter in (
+                self.model_manager
+                .get_enabled_parameters()
+            )
+        }

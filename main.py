@@ -1,1025 +1,1226 @@
+"""
+SIH26170 - Core AI Engine
+Version: 3.0
+
+Phase 1 Core Pipeline
+---------------------
+1. Data Loading
+2. Preprocessing
+3. Data Validation
+4. Current Specification Screening
+5. Global + Lot-relative Anomaly Detection
+6. Model Training / Evaluation
+7. Future 168h Prediction
+8. Predicted Specification Screening
+9. Drift Risk Calculation
+10. Risk Fusion
+11. Quantitative Explainability
+12. Metadata / Result Summary
+"""
+
+from __future__ import annotations
+
 from pathlib import Path
+from datetime import datetime, timezone
+from typing import Any, Dict, Optional
 
 import pandas as pd
 
+from utils.config_loader import ConfigLoader
 from utils.data_loader import DataLoader
 from utils.data_preprocessor import DataPreprocessor
-from utils.config_loader import ConfigLoader
 
 from modules.data_validator import DataValidator
-from modules.specification_engine import SpecificationEngine
 from modules.anomaly_detector import AnomalyDetector
 from modules.drift_predictor import DriftPredictor
+from modules.specification_engine import SpecificationEngine
 from modules.risk_fusion import RiskFusion
+from modules.explainability_engine import ExplainabilityEngine
+
+from models.model_manager import ModelManager
 
 
-class ScreeningPipeline:
-    """
-    AI-Assisted Adaptive Component Screening Pipeline
+class SIH26170Engine:
+    """Main orchestration engine for SIH26170 Phase 1."""
 
-    Complete workflow:
+    ENGINE_VERSION = "3.0"
 
-        Data Loading
-            ↓
-        Preprocessing
-            ↓
-        Data Validation
-            ↓
-        Current Engineering Specification Check
-            ↓
-        AI Anomaly Detection
-            ↓
-        Multi-Parameter Drift Prediction
-            ↓
-        Predicted 168h Engineering Specification Check
-            ↓
-        Risk Fusion
-            ↓
-        Final Decision
-            ↓
-        Save Results + Model Metrics
+    def __init__(
+        self,
+        project_root: Optional[str] = None
+    ):
 
-    Final decisions:
-        PASS
-        INVESTIGATE
-        REJECT
+        # =========================================================
+        # PROJECT PATHS
+        # =========================================================
 
-    Important:
-        Actual 168h measurements are retained for retrospective
-        validation/reference.
+        if project_root is None:
+            self.project_root = Path(
+                __file__
+            ).resolve().parent
+        else:
+            self.project_root = Path(
+                project_root
+            ).resolve()
 
-        Predicted 168h values are used for future-oriented screening.
-    """
+        self.config_dir = (
+            self.project_root / "config"
+        )
 
-    # =========================================================
-    # INITIALIZATION
-    # =========================================================
+        self.models_dir = (
+            self.project_root / "models"
+        )
 
-    def __init__(self, config_dir="config"):
+        self.data_dir = (
+            self.project_root / "data"
+        )
 
-        # -----------------------------------------------------
-        # Configuration
-        # -----------------------------------------------------
+        # =========================================================
+        # CONFIG LOADER
+        # =========================================================
 
-        self.config_loader = ConfigLoader(config_dir)
+        self.config_loader = ConfigLoader(
+            project_root=self.project_root
+        )
 
         self.pipeline_config = (
-            self.config_loader.load_pipeline_config()
+            self._load_pipeline_config()
         )
 
-        self.specifications = (
-            self.config_loader.load_specifications()
-        )
-
-        # -----------------------------------------------------
-        # Core utilities
-        # -----------------------------------------------------
+        # =========================================================
+        # DATA MODULES
+        # =========================================================
 
         self.data_loader = DataLoader()
 
-        self.preprocessor = DataPreprocessor()
+        self.preprocessor = DataPreprocessor(
+            missing_numeric_strategy="median",
+            preserve_original=True
+        )
 
         self.validator = DataValidator()
 
-        # -----------------------------------------------------
-        # Specification Engine
-        # -----------------------------------------------------
+        # =========================================================
+        # MODEL MANAGEMENT
+        # =========================================================
 
-        self.specification_engine = SpecificationEngine(
-            self.specifications.get(
-                "electronics",
-                {}
+        self.model_manager = ModelManager(
+            registry_path=str(
+                self.models_dir /
+                "model_registry.json"
+            ),
+            project_root=str(
+                self.project_root
             )
         )
 
-        # -----------------------------------------------------
-        # Anomaly Detector
-        # -----------------------------------------------------
-
-        anomaly_config = self.pipeline_config.get(
-            "anomaly_detection",
-            {}
-        )
+        # =========================================================
+        # ANOMALY DETECTION
+        # =========================================================
 
         self.anomaly_detector = AnomalyDetector(
-            contamination=anomaly_config.get(
-                "contamination",
-                0.15
-            ),
-            n_estimators=anomaly_config.get(
-                "n_estimators",
-                200
-            ),
-            random_state=anomaly_config.get(
-                "random_state",
-                42
-            )
+            config=self.pipeline_config
         )
 
-        # -----------------------------------------------------
-        # Drift Predictor
-        # -----------------------------------------------------
-
-        drift_config = self.pipeline_config.get(
-            "drift_prediction",
-            {}
-        )
+        # =========================================================
+        # DRIFT PREDICTION
+        # =========================================================
 
         self.drift_predictor = DriftPredictor(
-            random_state=drift_config.get(
-                "random_state",
-                42
-            )
+            model_manager=self.model_manager
         )
 
-        # -----------------------------------------------------
-        # Risk Fusion
-        # -----------------------------------------------------
+        # =========================================================
+        # SPECIFICATION ENGINE
+        # =========================================================
 
-        risk_config = self.pipeline_config.get(
-            "risk_fusion",
-            {}
+        self.specification_engine = SpecificationEngine(
+            specification_path=str(
+                self.config_dir /
+                "specifications.json"
+            ),
+            project_root=str(
+                self.project_root
+            ),
+            domain="electronics"
         )
+
+        # =========================================================
+        # RISK FUSION
+        # =========================================================
 
         self.risk_fusion = RiskFusion(
-            anomaly_weight=risk_config.get(
-                "anomaly_weight",
-                0.5
-            ),
-            drift_weight=risk_config.get(
-                "drift_weight",
-                0.5
-            ),
-            investigate_threshold=risk_config.get(
-                "investigate_threshold",
-                0.25
-            ),
-            reject_threshold=risk_config.get(
-                "reject_threshold",
-                0.70
+            anomaly_weight=0.30,
+            lot_anomaly_weight=0.20,
+            drift_weight=0.20,
+            current_spec_weight=0.15,
+            predicted_spec_weight=0.15
+        )
+
+        # =========================================================
+        # EXPLAINABILITY
+        # =========================================================
+
+        self.explainability_engine = (
+            ExplainabilityEngine(
+                lot_group_columns=[
+                    "Lot_ID",
+                    "Component_Type"
+                ]
             )
         )
 
-    # =========================================================
-    # 1. CURRENT SPECIFICATION EVALUATION
-    # =========================================================
+        # =========================================================
+        # RUNTIME STATE
+        # =========================================================
 
-    def evaluate_specifications(self, data):
+        self.raw_data = None
+        self.prepared_data = None
+        self.validated_data = None
+        self.results = None
 
-        """
-        Evaluate actual 168h measurements against
-        engineering limits.
+        self.dataset_metadata = {}
+        self.validation_report = {}
+        self.training_results = {}
+        self.prediction_results = {}
 
-        This result is retained as a reference/
-        retrospective validation result.
+    # =============================================================
+    # CONFIGURATION
+    # =============================================================
 
-        It is NOT directly used as the future screening
-        decision.
-        """
+    def _load_pipeline_config(
+        self
+    ) -> Dict[str, Any]:
 
-        result = data.copy()
-
-        result = self.specification_engine.evaluate_dataset(
-            result
+        path = (
+            self.config_dir /
+            "pipeline_config.json"
         )
 
-        return result
+        if not path.exists():
+            raise FileNotFoundError(
+                f"Configuration file not found: {path}"
+            )
 
-    # =========================================================
-    # 2. ANOMALY DETECTION
-    # =========================================================
-
-    def detect_anomalies(self, data):
-
-        """
-        Run AI-based anomaly detection.
-
-        Uses configured anomaly features and
-        combines Isolation Forest behaviour with
-        statistical abnormality.
-        """
-
-        anomaly_config = self.pipeline_config.get(
-            "anomaly_detection",
-            {}
+        return self.config_loader.load(
+            str(path)
         )
 
-        features = anomaly_config.get(
-            "features",
-            []
+    # =============================================================
+    # DATA LOADING
+    # =============================================================
+
+    def load_data(
+        self,
+        source: Any
+    ) -> pd.DataFrame:
+        """Load input dataset."""
+
+        loaded = self.data_loader.load(
+            source
         )
 
-        available_features = [
-            feature
-            for feature in features
-            if feature in data.columns
-        ]
+        if isinstance(
+            loaded,
+            pd.DataFrame
+        ):
 
-        if not available_features:
+            data = loaded
 
+        elif isinstance(
+            loaded,
+            dict
+        ):
+
+            data = loaded.get(
+                "data"
+            )
+
+            if data is None:
+                data = loaded.get(
+                    "dataframe"
+                )
+
+            if data is None:
+                raise ValueError(
+                    "DataLoader did not return a DataFrame."
+                )
+
+        else:
+
+            raise TypeError(
+                "Unsupported DataLoader result type: "
+                f"{type(loaded).__name__}"
+            )
+
+        self.raw_data = data.copy()
+
+        # Metadata
+        try:
+
+            metadata = (
+                self.data_loader.get_metadata()
+            )
+
+            if isinstance(
+                metadata,
+                dict
+            ):
+                self.dataset_metadata = metadata
+
+        except Exception:
+
+            self.dataset_metadata = {}
+
+        return self.raw_data
+
+    # =============================================================
+    # PREPROCESSING
+    # =============================================================
+
+    def prepare_data(
+        self,
+        data: Optional[pd.DataFrame] = None
+    ) -> pd.DataFrame:
+        """Prepare and clean dataset."""
+
+        if data is None:
+
+            if self.raw_data is None:
+                raise ValueError(
+                    "No raw data available. "
+                    "Run load_data() first."
+                )
+
+            data = self.raw_data
+
+        self.prepared_data = (
+            self.preprocessor.prepare(
+                data.copy()
+            )
+        )
+
+        return self.prepared_data
+
+    # =============================================================
+    # VALIDATION
+    # =============================================================
+
+    def validate_data(
+        self,
+        data: Optional[pd.DataFrame] = None,
+        mode: str = "AUTO"
+    ) -> Dict[str, Any]:
+        """Validate data quality."""
+
+        if data is None:
+
+            if self.prepared_data is None:
+                raise ValueError(
+                    "No prepared data available."
+                )
+
+            data = self.prepared_data
+
+        self.validation_report = (
+            self.validator.validate(
+                data,
+                mode=mode
+            )
+        )
+
+        self.validated_data = data.copy()
+
+        return self.validation_report
+
+    # =============================================================
+    # CURRENT SPECIFICATION SCREENING
+    # =============================================================
+
+    def evaluate_current_specifications(
+        self,
+        data: Optional[pd.DataFrame] = None
+    ) -> pd.DataFrame:
+        """Evaluate current measured values."""
+
+        if data is None:
+            data = self.validated_data
+
+        if data is None:
             raise ValueError(
-                "No anomaly detection features "
-                "are available in the dataset."
+                "No validated data available."
             )
 
-        result = self.anomaly_detector.run(
-            data,
-            available_features
+        output = data.copy()
+
+        parameters = (
+            self.model_manager
+            .get_enabled_parameters()
         )
 
-        return result
+        for parameter in parameters:
 
-    # =========================================================
-    # 3. MULTI-PARAMETER DRIFT PREDICTION
-    # =========================================================
-
-    def predict_all_drifts(self, data):
-
-        """
-        Predict future 168h behaviour for:
-
-            IDDQ
-            Leakage
-            Delay
-
-        For every parameter:
-
-            0h + 24h + 96h
-                    ↓
-              ML Model Selection
-                    ↓
-              Best Model
-                    ↓
-              Predicted 168h
-                    ↓
-              Drift Rate
-                    ↓
-              Drift Risk
-        """
-
-        result = data.copy()
-
-        drift_config = self.pipeline_config.get(
-            "drift_prediction",
-            {}
-        )
-
-        parameters = drift_config.get(
-            "parameters",
-            {}
-        )
-
-        parameter_metrics = []
-
-        drift_risk_columns = []
-
-        # -----------------------------------------------------
-        # Process each parameter
-        # -----------------------------------------------------
-
-        for parameter, settings in parameters.items():
-
-            print(
-                f"   Processing {parameter}..."
-            )
-
-            # -------------------------------------------------
-            # Configuration
-            # -------------------------------------------------
-
-            features = settings.get(
-                "features",
-                []
-            )
-
-            target = settings.get(
-                "target"
-            )
-
-            current_column = settings.get(
-                "current"
-            )
-
-            # -------------------------------------------------
-            # Check feature availability
-            # -------------------------------------------------
-
-            available_features = [
-                feature
-                for feature in features
-                if feature in result.columns
-            ]
-
-            if not available_features:
-
-                print(
-                    f"   Skipping {parameter}: "
-                    f"prediction features missing."
-                )
-
-                continue
-
-            if target not in result.columns:
-
-                print(
-                    f"   Skipping {parameter}: "
-                    f"target column missing."
-                )
-
-                continue
-
-            if current_column not in result.columns:
-
-                print(
-                    f"   Skipping {parameter}: "
-                    f"current value column missing."
-                )
-
-                continue
-
-            # -------------------------------------------------
-            # Run drift prediction
-            # -------------------------------------------------
-
-            parameter_result, comparison = (
-                self.drift_predictor.run(
-                    data=result,
-                    feature_columns=available_features,
-                    target_column=target,
-                    current_column=current_column,
-                    warning_threshold=drift_config.get(
-                        "warning_threshold",
-                        0.20
-                    ),
-                    reject_threshold=drift_config.get(
-                        "reject_threshold",
-                        0.40
-                    )
-                )
-            )
-
-            # -------------------------------------------------
-            # IMPORTANT:
-            # Create prediction column using target name.
-            #
-            # Example:
-            #
-            # target:
-            # Iddq_168h_uA
-            #
-            # prediction:
-            # Predicted_Iddq_168h_uA
-            # -------------------------------------------------
-
-            predicted_column = (
-                f"Predicted_{target}"
-            )
-
-            # -------------------------------------------------
-            # Drift columns
-            # -------------------------------------------------
-
-            drift_rate_column = (
-                f"{parameter}_Drift_Rate"
-            )
-
-            drift_risk_column = (
-                f"{parameter}_Drift_Risk"
-            )
-
-            drift_status_column = (
-                f"{parameter}_Drift_Status"
-            )
-
-            # -------------------------------------------------
-            # Copy prediction
-            # -------------------------------------------------
-
-            if predicted_column in parameter_result.columns:
-
-                result[predicted_column] = (
-                    parameter_result[
-                        predicted_column
-                    ]
-                )
-
-            # -------------------------------------------------
-            # Copy drift rate
-            # -------------------------------------------------
-
-            if drift_rate_column in parameter_result.columns:
-
-                result[drift_rate_column] = (
-                    parameter_result[
-                        drift_rate_column
-                    ]
-                )
-
-            # -------------------------------------------------
-            # Copy drift risk
-            # -------------------------------------------------
-
-            if drift_risk_column in parameter_result.columns:
-
-                result[drift_risk_column] = (
-                    parameter_result[
-                        drift_risk_column
-                    ]
-                )
-
-                drift_risk_columns.append(
-                    drift_risk_column
-                )
-
-            # -------------------------------------------------
-            # Copy drift status
-            # -------------------------------------------------
-
-            if drift_status_column in parameter_result.columns:
-
-                result[drift_status_column] = (
-                    parameter_result[
-                        drift_status_column
-                    ]
-                )
-
-            # -------------------------------------------------
-            # Store model comparison
-            # -------------------------------------------------
-
-            comparison = comparison.copy()
-
-            if "Parameter" not in comparison.columns:
-
-                comparison.insert(
-                    0,
-                    "Parameter",
+            current_column = (
+                self.model_manager
+                .get_current_column(
                     parameter
                 )
-
-            parameter_metrics.append(
-                comparison
             )
 
-        # =====================================================
-        # COMBINED DRIFT RISK
-        # =====================================================
+            if current_column not in output.columns:
+                continue
 
-        if drift_risk_columns:
+            statuses = []
 
-            result["Drift_Risk"] = (
-                result[
-                    drift_risk_columns
-                ]
-                .max(axis=1)
-                .clip(0, 1)
+            for value in output[
+                current_column
+            ]:
+
+                try:
+
+                    result = (
+                        self.specification_engine
+                        .evaluate(
+                            parameter,
+                            value
+                        )
+                    )
+
+                    if isinstance(
+                        result,
+                        dict
+                    ):
+
+                        status = result.get(
+                            "status",
+                            result.get(
+                                "decision",
+                                "UNKNOWN"
+                            )
+                        )
+
+                    else:
+
+                        status = str(
+                            result
+                        )
+
+                except Exception:
+
+                    status = "UNKNOWN"
+
+                statuses.append(
+                    status
+                )
+
+            output[
+                f"Current_{parameter}_Spec_Status"
+            ] = statuses
+
+        return output
+
+    # =============================================================
+    # ANOMALY DETECTION
+    # =============================================================
+
+    def detect_anomalies(
+        self,
+        data: Optional[pd.DataFrame] = None
+    ) -> pd.DataFrame:
+        """Detect global and lot-relative anomalies."""
+
+        if data is None:
+            data = self.validated_data
+
+        if data is None:
+            raise ValueError(
+                "No validated data available."
             )
 
-        else:
+        output = data.copy()
 
-            result["Drift_Risk"] = 0.0
+        try:
 
-        # =====================================================
-        # COMBINED DRIFT STATUS
-        # =====================================================
-
-        result["Drift_Status"] = (
-            result[
-                "Drift_Risk"
-            ].apply(
-                self._get_drift_status
-            )
-        )
-
-        # =====================================================
-        # MODEL METRICS
-        # =====================================================
-
-        if parameter_metrics:
-
-            metrics = pd.concat(
-                parameter_metrics,
-                ignore_index=True
-            )
-
-        else:
-
-            metrics = pd.DataFrame(
-                columns=[
-                    "Parameter",
-                    "Model",
-                    "MAE",
-                    "RMSE",
-                    "R2"
-                ]
-            )
-
-        return result, metrics
-
-    # =========================================================
-    # COMBINED DRIFT STATUS
-    # =========================================================
-
-    def _get_drift_status(self, risk):
-
-        if risk >= 0.70:
-
-            return "HIGH_RISK"
-
-        if risk >= 0.25:
-
-            return "EARLY_WARNING"
-
-        return "NORMAL"
-
-    # =========================================================
-    # 4. PREDICTED SPECIFICATION EVALUATION
-    # =========================================================
-
-    def evaluate_predicted_specifications(self, data):
-
-        """
-        Evaluate predicted 168h values against
-        engineering limits.
-
-        This is the main future-oriented engineering
-        screening stage.
-        """
-
-        result = data.copy()
-
-        result = (
-            self.specification_engine
-            .evaluate_predicted_dataset(
-                result
-            )
-        )
-
-        return result
-
-    # =========================================================
-    # 5. FINAL DECISION
-    # =========================================================
-
-    def apply_specification_decision(self, data):
-
-        """
-        Combine AI decision with predicted engineering
-        specification status.
-
-        Priority:
-
-            Predicted specification REJECT
-                    ↓
-                 REJECT
-
-            Predicted specification INVESTIGATE
-                    ↓
-              INVESTIGATE
-
-            Otherwise:
-                    ↓
-              Keep AI decision
-        """
-
-        result = data.copy()
-
-        def apply_override(row):
-
-            # -------------------------------------------------
-            # IMPORTANT:
-            # Use predicted specification status.
-            # -------------------------------------------------
-
-            specification_status = str(
-                row.get(
-                    "Predicted_Specification_Status",
-                    "PASS"
+            result = (
+                self.anomaly_detector
+                .detect(
+                    output
                 )
             )
 
-            ai_decision = str(
-                row.get(
-                    "Decision",
-                    "PASS"
+        except AttributeError:
+
+            result = (
+                self.anomaly_detector
+                .fit_predict(
+                    output
                 )
             )
 
-            # -------------------------------------------------
-            # Predicted engineering limit exceeded
-            # -------------------------------------------------
+        if isinstance(
+            result,
+            pd.DataFrame
+        ):
+            return result
 
-            if specification_status == "REJECT":
+        if isinstance(
+            result,
+            dict
+        ):
 
-                return "REJECT"
+            result_data = result.get(
+                "data"
+            )
 
-            # -------------------------------------------------
-            # Predicted engineering warning
-            # -------------------------------------------------
+            if isinstance(
+                result_data,
+                pd.DataFrame
+            ):
+                return result_data
 
-            if (
-                specification_status
-                == "INVESTIGATE"
-                and
-                ai_decision
-                == "PASS"
+        return output
+
+    # =============================================================
+    # MODEL TRAINING
+    # =============================================================
+
+    def train_models(
+        self,
+        data: Optional[pd.DataFrame] = None
+    ) -> Dict[str, Any]:
+        """Train and evaluate drift models."""
+
+        if data is None:
+            data = self.validated_data
+
+        if data is None:
+            raise ValueError(
+                "No validated data available."
+            )
+
+        self.training_results = (
+            self.drift_predictor.train_all(
+                data
+            )
+        )
+
+        return self.training_results
+
+    # =============================================================
+    # FUTURE 168H PREDICTION
+    # =============================================================
+
+    def predict_future(
+        self,
+        data: Optional[pd.DataFrame] = None
+    ) -> pd.DataFrame:
+        """Predict future 168h values."""
+
+        if data is None:
+            data = self.validated_data
+
+        if data is None:
+            raise ValueError(
+                "No validated data available."
+            )
+
+        output = data.copy()
+
+        try:
+
+            predictions = (
+                self.drift_predictor
+                .predict_all(
+                    output
+                )
+            )
+
+            if isinstance(
+                predictions,
+                pd.DataFrame
             ):
 
-                return "INVESTIGATE"
+                output = predictions
 
-            # -------------------------------------------------
-            # Otherwise keep AI decision
-            # -------------------------------------------------
+            elif isinstance(
+                predictions,
+                dict
+            ):
 
-            return ai_decision
+                prediction_data = (
+                    predictions.get(
+                        "data"
+                    )
+                )
 
-        result["Decision"] = result.apply(
-            apply_override,
-            axis=1
-        )
+                if isinstance(
+                    prediction_data,
+                    pd.DataFrame
+                ):
+                    output = prediction_data
 
-        return result
+        except (
+            FileNotFoundError,
+            ValueError
+        ):
 
-    # =========================================================
-    # 6. SAVE RESULTS
-    # =========================================================
+            # Models may not exist during
+            # validation-only execution.
+            pass
 
-    def save_results(
+        return output
+
+    # =============================================================
+    # PREDICTED SPECIFICATION SCREENING
+    # =============================================================
+
+    def evaluate_predicted_specifications(
         self,
-        result,
-        metrics,
-        output_dir="results"
-    ):
+        data: Optional[pd.DataFrame] = None
+    ) -> pd.DataFrame:
+        """Evaluate predicted 168h values."""
 
-        """
-        Save final screening results and
-        model comparison metrics.
-        """
+        if data is None:
+            data = self.validated_data
 
-        output_path = Path(
-            output_dir
+        if data is None:
+            raise ValueError(
+                "No validated data available."
+            )
+
+        output = data.copy()
+
+        parameters = (
+            self.model_manager
+            .get_enabled_parameters()
         )
 
-        output_path.mkdir(
-            parents=True,
-            exist_ok=True
+        for parameter in parameters:
+
+            prediction_column = (
+                self.model_manager
+                .get_prediction_column(
+                    parameter
+                )
+            )
+
+            if prediction_column not in output.columns:
+                continue
+
+            statuses = []
+
+            for value in output[
+                prediction_column
+            ]:
+
+                try:
+
+                    result = (
+                        self.specification_engine
+                        .evaluate(
+                            parameter,
+                            value
+                        )
+                    )
+
+                    if isinstance(
+                        result,
+                        dict
+                    ):
+
+                        status = result.get(
+                            "status",
+                            result.get(
+                                "decision",
+                                "UNKNOWN"
+                            )
+                        )
+
+                    else:
+
+                        status = str(
+                            result
+                        )
+
+                except Exception:
+
+                    status = "UNKNOWN"
+
+                statuses.append(
+                    status
+                )
+
+            output[
+                f"Predicted_{parameter}_Spec_Status"
+            ] = statuses
+
+        return output
+
+    # =============================================================
+    # DRIFT RISK
+    # =============================================================
+
+    def calculate_drift_risk(
+        self,
+        data: Optional[pd.DataFrame] = None
+    ) -> pd.DataFrame:
+        """Calculate future drift percentage and risk."""
+
+        if data is None:
+            data = self.validated_data
+
+        if data is None:
+            raise ValueError(
+                "No data available."
+            )
+
+        output = data.copy()
+
+        drift_columns = []
+
+        parameters = (
+            self.model_manager
+            .get_enabled_parameters()
         )
 
-        # -----------------------------------------------------
-        # Final result file
-        # -----------------------------------------------------
+        for parameter in parameters:
 
-        result_file = (
-            output_path
-            / "final_screening_results.csv"
+            current_column = (
+                self.model_manager
+                .get_current_column(
+                    parameter
+                )
+            )
+
+            prediction_column = (
+                self.model_manager
+                .get_prediction_column(
+                    parameter
+                )
+            )
+
+            if (
+                current_column
+                not in output.columns
+                or
+                prediction_column
+                not in output.columns
+            ):
+                continue
+
+            current = pd.to_numeric(
+                output[current_column],
+                errors="coerce"
+            )
+
+            predicted = pd.to_numeric(
+                output[prediction_column],
+                errors="coerce"
+            )
+
+            denominator = (
+                current.abs()
+                .replace(
+                    0,
+                    pd.NA
+                )
+            )
+
+            drift_percent = (
+                (predicted - current)
+                .abs()
+                / denominator
+                * 100.0
+            )
+
+            drift_column = (
+                f"{parameter}_Drift_Percent"
+            )
+
+            output[drift_column] = (
+                drift_percent
+                .fillna(0.0)
+            )
+
+            drift_columns.append(
+                drift_column
+            )
+
+        if drift_columns:
+
+            output["Drift_Risk"] = (
+                output[
+                    drift_columns
+                ]
+                .max(axis=1)
+                .clip(0, 100)
+                / 100.0
+            )
+
+        else:
+
+            output["Drift_Risk"] = 0.0
+
+        return output
+
+    # =============================================================
+    # RISK FUSION
+    # =============================================================
+
+    def fuse_risk(
+        self,
+        data: Optional[pd.DataFrame] = None
+    ) -> pd.DataFrame:
+        """Fuse all major risk signals."""
+
+        if data is None:
+            data = self.validated_data
+
+        if data is None:
+            raise ValueError(
+                "No data available."
+            )
+
+        output = data.copy()
+
+        if "Drift_Risk" not in output.columns:
+
+            output = (
+                self.calculate_drift_risk(
+                    output
+                )
+            )
+
+        try:
+
+            fused = (
+                self.risk_fusion
+                .fuse_dataframe(
+                    output
+                )
+            )
+
+            if isinstance(
+                fused,
+                pd.DataFrame
+            ):
+                output = fused
+
+        except AttributeError:
+
+            scores = []
+
+            for _, row in output.iterrows():
+
+                result = (
+                    self.risk_fusion
+                    .fuse(
+                        row.to_dict()
+                    )
+                )
+
+                if isinstance(
+                    result,
+                    dict
+                ):
+
+                    score = result.get(
+                        "risk_score",
+                        result.get(
+                            "score",
+                            0.0
+                        )
+                    )
+
+                else:
+
+                    score = float(
+                        result
+                    )
+
+                scores.append(
+                    score
+                )
+
+            output["Risk_Score"] = scores
+
+            output[
+                "Risk_Percentage"
+            ] = (
+                output["Risk_Score"]
+                * 100.0
+            )
+
+        return output
+
+    # =============================================================
+    # EXPLAINABILITY
+    # =============================================================
+
+    def add_explainability(
+        self,
+        data: Optional[pd.DataFrame] = None
+    ) -> pd.DataFrame:
+        """Add quantitative WHY explanations."""
+
+        if data is None:
+            data = self.validated_data
+
+        if data is None:
+            raise ValueError(
+                "No data available."
+            )
+
+        output = data.copy()
+
+        explanations = []
+
+        parameters = (
+            self.model_manager
+            .get_enabled_parameters()
         )
 
-        # -----------------------------------------------------
-        # Model metrics file
-        # -----------------------------------------------------
+        for _, row in output.iterrows():
 
-        metrics_file = (
-            output_path
-            / "model_metrics.csv"
+            row_df = pd.DataFrame(
+                [row.to_dict()]
+            )
+
+            parameter_explanations = []
+
+            for parameter in parameters:
+
+                try:
+
+                    result = (
+                        self.explainability_engine
+                        .explain_dataframe(
+                            row_df,
+                            parameter=parameter
+                        )
+                    )
+
+                    explanation = None
+
+                    if isinstance(
+                        result,
+                        pd.DataFrame
+                    ):
+
+                        if (
+                            "AI_Explanation"
+                            in result.columns
+                        ):
+
+                            explanation = (
+                                result.iloc[0][
+                                    "AI_Explanation"
+                                ]
+                            )
+
+                        elif (
+                            "Explanation"
+                            in result.columns
+                        ):
+
+                            explanation = (
+                                result.iloc[0][
+                                    "Explanation"
+                                ]
+                            )
+
+                    elif isinstance(
+                        result,
+                        dict
+                    ):
+
+                        explanation = (
+                            result.get(
+                                "explanation",
+                                result.get(
+                                    "primary_reason"
+                                )
+                            )
+                        )
+
+                    if explanation:
+
+                        parameter_explanations.append(
+                            f"{parameter}: "
+                            f"{explanation}"
+                        )
+
+                except Exception:
+
+                    continue
+
+            if parameter_explanations:
+
+                explanations.append(
+                    " | ".join(
+                        parameter_explanations
+                    )
+                )
+
+            else:
+
+                explanations.append(
+                    "No quantitative explanation available."
+                )
+
+        output[
+            "AI_Explanation"
+        ] = explanations
+
+        return output
+
+    # =============================================================
+    # COMPLETE PHASE-1 PIPELINE
+    # =============================================================
+
+    def run_core_pipeline(
+        self,
+        source: Any,
+        mode: str = "AUTO",
+        train_models: bool = False
+    ) -> pd.DataFrame:
+        """Execute complete Phase-1 pipeline."""
+
+        # 1. Load
+        data = self.load_data(
+            source
         )
 
-        # -----------------------------------------------------
-        # Save
-        # -----------------------------------------------------
-
-        result.to_csv(
-            result_file,
-            index=False
-        )
-
-        metrics.to_csv(
-            metrics_file,
-            index=False
-        )
-
-        return (
-            result_file,
-            metrics_file
-        )
-
-    # =========================================================
-    # 7. COMPLETE PIPELINE
-    # =========================================================
-
-    def run(self, file_path):
-
-        print()
-        print("=" * 60)
-        print("AI-ASSISTED ADAPTIVE COMPONENT SCREENING")
-        print("=" * 60)
-
-        # =====================================================
-        # STEP 1
-        # =====================================================
-
-        print()
-        print("1/7 Loading data...")
-
-        data = self.data_loader.load_data(
-            file_path
-        )
-
-        print(
-            f"   Loaded {len(data)} records."
-        )
-
-        # =====================================================
-        # STEP 2
-        # =====================================================
-
-        print()
-        print("2/7 Preprocessing data...")
-
-        data = self.preprocessor.prepare(
+        # 2. Preprocess
+        data = self.prepare_data(
             data
         )
 
-        # =====================================================
-        # STEP 3
-        # =====================================================
-
-        print()
-        print("3/7 Validating data...")
-
-        validation = (
-            self.validator.validate(
-                data
-            )
-        )
-
-        if not validation["valid"]:
-
-            raise ValueError(
-                "Data validation failed: "
-                +
-                "; ".join(
-                    validation["errors"]
-                )
-            )
-
-        if validation.get("warnings"):
-
-            print()
-            print("   Validation warnings:")
-
-            for warning in validation[
-                "warnings"
-            ]:
-
-                print(
-                    f"   - {warning}"
-                )
-
-        # =====================================================
-        # STEP 4
-        # =====================================================
-
-        print()
-        print(
-            "4/7 Evaluating current engineering specifications..."
+        # 3. Validate
+        self.validate_data(
+            data,
+            mode=mode
         )
 
         data = (
-            self.evaluate_specifications(
+            self.validated_data.copy()
+        )
+
+        # 4. Current specification
+        data = (
+            self.evaluate_current_specifications(
                 data
             )
         )
 
-        # =====================================================
-        # STEP 5
-        # =====================================================
-
-        print()
-        print(
-            "5/7 Running AI anomaly detection..."
-        )
-
+        # 5. Anomaly detection
         data = (
             self.detect_anomalies(
                 data
             )
         )
 
-        # =====================================================
-        # STEP 6
-        # =====================================================
+        # 6. Optional model training
+        if train_models:
 
-        print()
-        print(
-            "6/7 Running multi-parameter drift prediction..."
-        )
+            self.training_results = (
+                self.train_models(
+                    data
+                )
+            )
 
-        data, metrics = (
-            self.predict_all_drifts(
+        # 7. Future prediction
+        data = (
+            self.predict_future(
                 data
             )
         )
 
-        # -----------------------------------------------------
-        # Predicted 168h specification check
-        # -----------------------------------------------------
-
-        print()
-        print(
-            "   Evaluating predicted 168h engineering specifications..."
-        )
-
+        # 8. Predicted specification
         data = (
             self.evaluate_predicted_specifications(
                 data
             )
         )
 
-        # =====================================================
-        # STEP 7
-        # =====================================================
-
-        print()
-        print(
-            "7/7 Calculating final risk..."
-        )
-
-        # -----------------------------------------------------
-        # Risk fusion
-        # -----------------------------------------------------
-
+        # 9. Drift risk
         data = (
-            self.risk_fusion.calculate_risk(
+            self.calculate_drift_risk(
                 data
             )
         )
 
-        # -----------------------------------------------------
-        # Apply predicted specification override
-        # -----------------------------------------------------
-
+        # 10. Risk fusion
         data = (
-            self.apply_specification_decision(
+            self.fuse_risk(
                 data
             )
         )
 
-        # =====================================================
-        # SAVE
-        # =====================================================
-
-        result_file, metrics_file = (
-            self.save_results(
-                data,
-                metrics
+        # 11. Explainability
+        data = (
+            self.add_explainability(
+                data
             )
         )
 
-        # =====================================================
-        # FINAL SUMMARY
-        # =====================================================
+        self.results = data
 
-        print()
-        print("=" * 60)
-        print("PIPELINE COMPLETED SUCCESSFULLY")
-        print("=" * 60)
+        return self.results
 
-        print()
+    # =============================================================
+    # PUBLIC RUN
+    # =============================================================
 
-        print(
-            f"Components processed : {len(data)}"
+    def run(
+        self,
+        source: Any,
+        mode: str = "AUTO",
+        train_models: bool = False
+    ) -> pd.DataFrame:
+        """Public pipeline entry point."""
+
+        return self.run_core_pipeline(
+            source=source,
+            mode=mode,
+            train_models=train_models
         )
 
-        # -----------------------------------------------------
-        # Decision summary
-        # -----------------------------------------------------
+    # =============================================================
+    # METADATA
+    # =============================================================
 
-        print()
-        print("Final decisions:")
+    def build_metadata(
+        self
+    ) -> Dict[str, Any]:
+        """Build audit/report metadata."""
 
-        print(
-            data[
-                "Decision"
-            ]
-            .value_counts()
-            .to_string()
-        )
+        return {
+            "engine_version":
+                self.ENGINE_VERSION,
 
-        # -----------------------------------------------------
-        # Anomaly summary
-        # -----------------------------------------------------
+            "pipeline_version":
+                self.pipeline_config.get(
+                    "project_version",
+                    self.ENGINE_VERSION
+                ),
 
-        if "Anomaly_Status" in data.columns:
+            "specification_version":
+                self.specification_engine
+                .specification_version,
 
-            print()
-            print("Anomaly status:")
+            "dataset_id":
+                self.dataset_metadata.get(
+                    "dataset_id",
+                    "UNKNOWN"
+                ),
 
-            print(
-                data[
-                    "Anomaly_Status"
-                ]
-                .value_counts()
-                .to_string()
-            )
+            "timestamp_utc":
+                datetime.now(
+                    timezone.utc
+                ).isoformat(),
 
-        # -----------------------------------------------------
-        # Drift summary
-        # -----------------------------------------------------
+            "enabled_parameters":
+                self.model_manager
+                .get_enabled_parameters(),
 
-        if "Drift_Status" in data.columns:
+            "model_policy":
+                self.model_manager
+                .get_model_policy()
+        }
 
-            print()
-            print("Drift status:")
+    # =============================================================
+    # RESULT SUMMARY
+    # =============================================================
 
-            print(
-                data[
-                    "Drift_Status"
-                ]
-                .value_counts()
-                .to_string()
-            )
+    def get_result_summary(
+        self
+    ) -> Dict[str, Any]:
+        """Return high-level result summary."""
 
-        # -----------------------------------------------------
-        # Predicted specification summary
-        # -----------------------------------------------------
+        if self.results is None:
 
-        if (
-            "Predicted_Specification_Status"
-            in data.columns
-        ):
+            return {
+                "status": "NO_RESULTS"
+            }
 
-            print()
-            print(
-                "Predicted specification status:"
-            )
+        data = self.results
 
-            print(
-                data[
-                    "Predicted_Specification_Status"
-                ]
-                .value_counts()
-                .to_string()
-            )
-
-        # -----------------------------------------------------
-        # Risk statistics
-        # -----------------------------------------------------
+        summary = {
+            "status": "COMPLETED",
+            "engine_version":
+                self.ENGINE_VERSION,
+            "rows":
+                len(data),
+            "columns":
+                len(data.columns)
+        }
 
         if "Risk_Score" in data.columns:
 
-            print()
-            print("Risk score summary:")
-
-            print(
-                data[
-                    "Risk_Score"
-                ]
-                .describe()
-                .to_string()
+            risk_values = pd.to_numeric(
+                data["Risk_Score"],
+                errors="coerce"
             )
 
-        # -----------------------------------------------------
-        # Saved files
-        # -----------------------------------------------------
+            summary[
+                "average_risk_score"
+            ] = float(
+                risk_values.mean()
+            )
 
-        print()
-        print(
-            f"Results : {result_file}"
-        )
+        if "Anomaly_Risk" in data.columns:
 
-        print(
-            f"Metrics : {metrics_file}"
-        )
+            summary[
+                "anomaly_count"
+            ] = int(
+                data["Anomaly_Risk"]
+                .fillna(False)
+                .astype(bool)
+                .sum()
+            )
 
-        print()
-        print("=" * 60)
+        if "Lot_Risk" in data.columns:
 
-        return data, metrics
+            summary[
+                "lot_anomaly_count"
+            ] = int(
+                data["Lot_Risk"]
+                .fillna(False)
+                .astype(bool)
+                .sum()
+            )
+
+        summary[
+            "metadata"
+        ] = self.build_metadata()
+
+        return summary
 
 
-# =============================================================
-# MAIN ENTRY POINT
-# =============================================================
+# =================================================================
+# DIRECT EXECUTION
+# =================================================================
 
 if __name__ == "__main__":
 
-    pipeline = ScreeningPipeline()
+    engine = SIH26170Engine()
 
-    print()
     print(
-        "Configuration loaded successfully."
+        "SIH26170 Core Engine"
     )
-
     print(
-        "Multi-parameter AI screening pipeline is ready."
+        "--------------------"
     )
-
-    print()
     print(
-        "Run using:"
+        "Version:",
+        engine.ENGINE_VERSION
     )
-
     print(
-        "python -c \"from main import ScreeningPipeline; "
-        "ScreeningPipeline().run('data/burn_in_measurements.csv')\""
+        "Parameters:",
+        engine.model_manager
+        .get_enabled_parameters()
+    )
+    print(
+        "Status: READY"
     )

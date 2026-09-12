@@ -1,0 +1,51 @@
+{
+  "manager_version": "3.0",
+  "registry_version": "3.0",
+  "parameter": "Iddq",
+  "feature_set": "full",
+  "model_name": null,
+  "saved_at": "2026-09-13T00:46:18.272311",
+  "model_path": "E:\\SIH26170_2.0\\models\\Iddq_full.joblib",
+  "predictor_version": "3.0",
+  "model_type": "Random Forest",
+  "features": [
+    "Iddq_0h_uA",
+    "Iddq_24h_uA",
+    "Iddq_96h_uA"
+  ],
+  "target_column": "Iddq_168h_uA",
+  "training_samples": 2000,
+  "validation_metrics": {
+    "MAE": 4.019188624999999,
+    "RMSE": 11.573289633951207,
+    "R2": 0.2533432724477698
+  },
+  "all_model_metrics": [
+    {
+      "model_name": "Linear Regression",
+      "metrics": {
+        "MAE": 5.650660838522242,
+        "RMSE": 12.599527733802153,
+        "R2": 0.11505583032715905
+      }
+    },
+    {
+      "model_name": "Random Forest",
+      "metrics": {
+        "MAE": 4.019188624999999,
+        "RMSE": 11.573289633951207,
+        "R2": 0.2533432724477698
+      }
+    },
+    {
+      "model_name": "Gradient Boosting",
+      "metrics": {
+        "MAE": 4.388330795679229,
+        "RMSE": 11.416169875985501,
+        "R2": 0.2734789802833304
+      }
+    }
+  ],
+  "selection_metric": "MAE",
+  "target_horizon_hours": 168
+}
