@@ -3,4 +3,6 @@ pandas
 numpy
 scikit-learn
 joblib
+plotly
 openpyxl
+xlrd
