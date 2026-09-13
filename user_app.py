@@ -845,6 +845,361 @@ def get_engine_metadata(
 
 
 # ================================================================
+# COMPONENT-WISE UNIVERSAL RESULTS
+# ================================================================
+
+def _build_component_results(
+    result: pd.DataFrame,
+    screen: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """
+    Build a per-component results view for universal screening that
+    mirrors the normal screening results columns (component/lot,
+    per-parameter current values, drift, spec violations and the fused
+    risk + decision columns).
+    """
+
+    if not isinstance(result, pd.DataFrame):
+        return []
+
+    phase_map = screen.get("phase_map", {}) or {}
+
+    drift_columns = [
+        column
+        for column in result.columns
+        if str(column).endswith("_Drift_Percent")
+    ]
+
+    records = []
+
+    for index, row in result.iterrows():
+
+        record: Dict[str, Any] = {}
+
+        component_id = None
+        lot_id = None
+
+        for column in ("Component_ID", "Serial_No", "Component", "Unit_ID"):
+            if column in result.columns:
+                candidate = row.get(column)
+                if pd.notna(candidate) and str(candidate).strip():
+                    component_id = candidate
+                    break
+
+        for column in ("Lot_ID", "Lot", "Batch"):
+            if column in result.columns:
+                candidate = row.get(column)
+                if pd.notna(candidate) and str(candidate).strip():
+                    lot_id = candidate
+                    break
+
+        record["Component"] = (
+            str(component_id) if component_id is not None else str(index)
+        )
+
+        if lot_id is not None:
+            record["Lot"] = lot_id
+
+        # Per-parameter measurement columns (0h / 24h / ...) from phase_map
+        for parameter, columns in phase_map.items():
+
+            display_parameter = str(parameter).replace("_", " ")
+
+            ordered_phase_columns = [
+                column
+                for column in columns
+                if column in result.columns
+            ]
+
+            for column in ordered_phase_columns:
+
+                label = column.replace(f"{parameter}_", "")
+
+                if not label.strip():
+                    continue
+
+                if label in record:
+                    continue
+
+                record[f"{display_parameter} ({label})"] = row.get(column)
+
+        # Drift percentage per parameter
+        for column in drift_columns:
+
+            parameter = str(column).replace("_Drift_Percent", "")
+
+            if not parameter:
+                continue
+
+            record[f"{parameter.replace('_', ' ')} Drift %"] = (
+                row.get(column)
+            )
+
+        # Spec violation flag (present only when limit columns exist)
+        if "Generic_Spec_Violation" in result.columns:
+
+            violation = row.get(
+                "Generic_Spec_Violation"
+            )
+
+            if violation is None or pd.isna(violation):
+                record["Spec Violation"] = "N/A"
+            else:
+                record["Spec Violation"] = (
+                    "YES"
+                    if bool(violation)
+                    else "No"
+                )
+
+        # Fused risk + decision columns (mirror normal screening results)
+        source_columns = [
+            "Anomaly_Risk",
+            "Anomaly_Lot_Risk",
+            "Drift_Risk",
+            "Overall_Risk_Score",
+            "Overall_Risk_Percentage",
+            "Risk_Level",
+            "Risk_Decision",
+            "AI_Explanation",
+        ]
+
+        for column in source_columns:
+
+            if column not in result.columns:
+                continue
+
+            record[column] = row.get(column)
+
+        records.append(record)
+
+    return records
+
+
+def render_universal_fallback_results(
+    screen: Dict[str, Any],
+) -> None:
+    """Render a compact universal-screening summary inline on the
+    Screening page when a dataset is not suitable for the electronics
+    engine, mirroring the Universal Screening page KPIs and the
+    per-component results table."""
+
+    st.divider()
+
+    st.markdown(
+        '<div class="section-title">'
+        'Universal Screening Results (Fallback)'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+    gr = screen.get("result")
+
+    if not isinstance(gr, pd.DataFrame) or gr.empty:
+        st.info(
+            "The Universal Screening engine could not produce "
+            "results for this dataset."
+        )
+        return
+
+    if "Risk_Decision" in gr.columns:
+
+        decision_counts = (
+            gr["Risk_Decision"]
+            .astype(str)
+            .str.upper()
+            .value_counts()
+            .reindex(["PASS", "MONITOR", "REVIEW", "REJECT"])
+            .fillna(0)
+            .astype(int)
+            .to_dict()
+        )
+
+        dc1, dc2, dc3, dc4, dc5 = st.columns(5)
+
+        with dc1:
+            st.metric("Total Records", len(gr))
+        with dc2:
+            st.metric("PASS", decision_counts.get("PASS", 0))
+        with dc3:
+            st.metric("MONITOR", decision_counts.get("MONITOR", 0))
+        with dc4:
+            st.metric(
+                "REVIEW",
+                decision_counts.get("REVIEW", 0)
+                + decision_counts.get("INVESTIGATE", 0),
+            )
+        with dc5:
+            st.metric("REJECT", decision_counts.get("REJECT", 0))
+
+        anomaly_count = 0
+        risk_mean = 0.0
+
+        if "Anomaly_Flag" in gr.columns:
+            anomaly_count = int(
+                gr["Anomaly_Flag"].fillna(False).astype(bool).sum()
+            )
+
+        if "Overall_Risk_Percentage" in gr.columns:
+            risk_mean = float(
+                gr["Overall_Risk_Percentage"].mean()
+            )
+
+        st.caption(
+            f"Anomaly-flagged records: {anomaly_count} "
+            f"| Average risk: {risk_mean:.1f}% "
+            f"| Drift: {screen.get('drift_note', 'N/A')}"
+        )
+
+    st.markdown(
+        "### Component-wise Results"
+    )
+
+    component_records = _build_component_results(gr, screen)
+
+    component_view = pd.DataFrame(component_records)
+
+    st.dataframe(
+        component_view,
+        use_container_width=True,
+        height=360,
+        hide_index=True,
+    )
+
+    csv_bytes = gr.to_csv(index=False).encode("utf-8")
+
+    st.download_button(
+        label="⬇ Download Universal Results (CSV)",
+        data=csv_bytes,
+        file_name=(
+            f"universal_screening_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        ),
+        mime="text/csv",
+        use_container_width=True,
+    )
+
+
+def maybe_render_universal_fallback(
+    df: pd.DataFrame,
+    operating_mode: str,
+) -> None:
+    """Render the universal-screening fallback panel on the Screening
+    page for datasets that the electronics engine rejects. Persists only
+    while the flagged DataFrame is still the active upload."""
+
+    fallback_active = False
+
+    try:
+
+        fallback_active = bool(
+            st.session_state.screening_fallback_active
+        )
+
+    except Exception:
+        pass
+
+    if not fallback_active:
+        return
+
+    try:
+
+        if st.session_state.generic_uploaded_data is not df:
+            return
+
+    except Exception:
+        return
+
+    quality_result = {}
+
+    try:
+
+        quality_result = st.session_state.quality_result
+
+    except Exception:
+        pass
+
+    st.error(
+        "This dataset is not ready for the "
+        "electronics screening engine in the "
+        "current mode."
+    )
+
+    warnings_out = (
+        quality_result.get(
+            "readiness",
+            {},
+        ).get(
+            "warnings",
+            [],
+        )
+    )
+
+    for warning in warnings_out:
+
+        st.warning(
+            warning
+        )
+
+    st.info(
+        "The Universal Screening engine accepts any "
+        "dataset — auto-detects the domain and still "
+        "applies anomaly detection, risk fusion and "
+        "168h drift prediction."
+    )
+
+    if st.button(
+        "🌐 Run Universal Screening "
+        "for this dataset instead",
+        type="primary",
+        use_container_width=True,
+    ):
+
+        with st.spinner(
+            "Running universal screening..."
+        ):
+
+            try:
+
+                generic_engine = (
+                    get_generic_engine()
+                )
+
+                generic_result = (
+                    generic_engine.screen(
+                        df,
+                        mode=operating_mode,
+                    )
+                )
+
+                st.session_state.generic_screening_result = (
+                    generic_result
+                )
+                st.session_state.generic_screening_done = True
+
+            except Exception as error:
+
+                st.error(
+                    f"Universal screening failed: {error}"
+                )
+
+    generic_screen = None
+
+    try:
+
+        generic_screen = (
+            st.session_state.generic_screening_result
+        )
+
+    except Exception:
+        pass
+
+    if generic_screen is not None:
+
+        render_universal_fallback_results(
+            generic_screen
+        )
+
+
+# ================================================================
 # SIDEBAR
 # ================================================================
 
@@ -871,6 +1226,7 @@ with st.sidebar:
             "🌐 Universal Screening",
             "📥 Reports",
         ],
+        key="menu_radio",
     )
 
     st.divider()
@@ -1368,11 +1724,18 @@ elif page == "⚙️ Screening":
                         False,
                     ):
 
-                        st.error(
-                            "Dataset is not ready for screening."
+                        st.session_state.screening_fallback_active = True
+                        st.session_state.generic_uploaded_data = df
+                        st.session_state.generic_screening_done = False
+
+                        maybe_render_universal_fallback(
+                            df,
+                            operating_mode,
                         )
 
                         st.stop()
+
+                    st.session_state.screening_fallback_active = False
 
                     # ------------------------------------------------
                     # Domain detection
@@ -1464,6 +1827,15 @@ elif page == "⚙️ Screening":
                     st.error(
                         f"Screening failed: {error}"
                     )
+
+        # ------------------------------------------------------------
+        # Universal fallback panel (non-electronics datasets)
+        # ------------------------------------------------------------
+
+        maybe_render_universal_fallback(
+            df,
+            operating_mode,
+        )
 
 
 # ================================================================
@@ -2748,6 +3120,26 @@ elif page == "🌐 Universal Screening":
                 gr,
                 use_container_width=True,
                 height=480,
+                hide_index=True,
+            )
+
+            st.markdown(
+                "### 📊 Component-wise Results"
+            )
+
+            component_records = _build_component_results(
+                gr,
+                generic_screen,
+            )
+
+            component_view = pd.DataFrame(
+                component_records
+            )
+
+            st.dataframe(
+                component_view,
+                use_container_width=True,
+                height=420,
                 hide_index=True,
             )
 

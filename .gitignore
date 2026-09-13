@@ -10,3 +10,6 @@ Thumbs.db
 # Generated screening files
 results/*.csv
 data/uploaded_electronics_data.csv
+
+# Runtime audit artifacts
+reports/

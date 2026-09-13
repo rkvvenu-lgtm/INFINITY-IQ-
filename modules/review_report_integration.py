@@ -179,6 +179,66 @@ class ReviewReportIntegration:
             "timestamp_utc": self._now_utc(),
         }
 
+        # Explicit adapter for EngineeringReview's canonical public API.
+        # EngineeringReview.submit_review() builds a review record and
+        # persists it as an audit event. Its keyword signature differs
+        # from this facade's payload (comment vs comments), so map the
+        # keys explicitly instead of relying on **payload.
+        adapter_method = getattr(
+            self.engineering_review,
+            "submit_review",
+            None,
+        )
+
+        if not callable(adapter_method):
+            adapter_method = getattr(
+                self.engineering_review,
+                "create_review_record",
+                None,
+            )
+
+        if callable(adapter_method):
+
+            mapped_arguments = {
+                "component_id": payload["component_id"],
+                "action": payload["action"],
+                "reviewer": payload["reviewer"],
+                "comment": payload["comments"],
+                "justification": payload["justification"],
+                "lot_id": payload["lot_id"],
+                "dataset_id": payload["dataset_id"],
+                "dataset_version": payload["dataset_version"],
+                "model_version": payload["model_version"],
+                "specification_version": payload[
+                    "specification_version"
+                ],
+                "configuration_version": payload[
+                    "configuration_version"
+                ],
+                "risk_level": payload["risk_level"],
+                "risk_score": payload["risk_score"],
+            }
+
+            try:
+
+                result = adapter_method(
+                    **mapped_arguments
+                )
+
+                if isinstance(result, dict):
+
+                    return self._json_safe({
+                        "status": "RECORDED",
+                        "review": result,
+                        "reviewer": payload["reviewer"],
+                        "component_id": payload["component_id"],
+                    })
+
+            except TypeError:
+                # Signature mismatch: fall through to the
+                # conventional-name detection below.
+                pass
+
         # EngineeringReview versions may expose one of these conventional
         # entry points. Prefer the explicit review method.
         for method_name in (
@@ -235,6 +295,7 @@ class ReviewReportIntegration:
         methods = (
             "review_summary",
             "get_review_summary",
+            "summarize_reviews",
             "summary",
         )
 

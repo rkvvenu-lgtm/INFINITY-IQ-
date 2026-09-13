@@ -380,7 +380,7 @@ class SIH26170Engine:
 
                     result = (
                         self.specification_engine
-                        .evaluate(
+                        .evaluate_value(
                             parameter,
                             value
                         )
@@ -617,7 +617,7 @@ class SIH26170Engine:
 
                     result = (
                         self.specification_engine
-                        .evaluate(
+                        .evaluate_value(
                             parameter,
                             value
                         )
