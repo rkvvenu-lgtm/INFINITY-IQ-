@@ -56,26 +56,27 @@ st.markdown(
     <style>
 
     .stApp {
-        background-color: #f5f7fb;
+        background-color: var(--background-color);
     }
 
     .main-title {
         font-size: 36px;
         font-weight: 750;
-        color: #172033;
+        color: var(--text-color);
         margin-bottom: 4px;
     }
 
     .subtitle {
         font-size: 16px;
-        color: #667085;
+        color: var(--text-color);
+        opacity: 0.65;
         margin-bottom: 22px;
     }
 
     .section-title {
         font-size: 24px;
         font-weight: 700;
-        color: #172033;
+        color: var(--text-color);
         margin-top: 20px;
         margin-bottom: 12px;
     }
@@ -83,22 +84,23 @@ st.markdown(
     .info-box {
         padding: 18px;
         border-radius: 12px;
-        background-color: #eaf2ff;
-        border-left: 5px solid #2563eb;
-        color: #172033;
+        background-color: rgba(37, 99, 235, 0.08);
+        border-left: 5px solid var(--primary-color);
+        color: var(--text-color);
     }
 
     .metric-card {
         padding: 15px;
         border-radius: 12px;
-        background-color: white;
-        border: 1px solid #e4e7ec;
-        box-shadow: 0px 2px 8px rgba(0,0,0,0.04);
+        background-color: var(--secondary-background-color);
+        border: 1px solid var(--border-color, #e4e7ec);
+        box-shadow: 0px 2px 8px rgba(0,0,0,0.06);
     }
 
     .footer {
         text-align: center;
-        color: #667085;
+        color: var(--text-color);
+        opacity: 0.6;
         font-size: 13px;
         margin-top: 40px;
         padding-bottom: 20px;
