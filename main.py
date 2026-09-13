@@ -1090,6 +1090,39 @@ class SIH26170Engine:
     # METADATA
     # =============================================================
 
+    def _get_specification_version(
+        self
+    ) -> str:
+        """Read the specification version safely."""
+
+        engine = self.specification_engine
+
+        value = getattr(
+            engine,
+            "specification_version",
+            None
+        )
+
+        if value:
+            return str(value)
+
+        specs = getattr(
+            engine,
+            "specifications",
+            None
+        )
+
+        if isinstance(specs, dict):
+
+            value = specs.get(
+                "specification_version"
+            )
+
+            if value:
+                return str(value)
+
+        return "UNKNOWN"
+
     def build_metadata(
         self
     ) -> Dict[str, Any]:
@@ -1106,8 +1139,7 @@ class SIH26170Engine:
                 ),
 
             "specification_version":
-                self.specification_engine
-                .specification_version,
+                self._get_specification_version(),
 
             "dataset_id":
                 self.dataset_metadata.get(
@@ -1156,10 +1188,20 @@ class SIH26170Engine:
                 len(data.columns)
         }
 
-        if "Risk_Score" in data.columns:
+        risk_column = None
+        for column in (
+            "Overall_Risk_Score",
+            "Risk_Score",
+            "Overall_Risk_Percentage",
+        ):
+            if column in data.columns:
+                risk_column = column
+                break
+
+        if risk_column is not None:
 
             risk_values = pd.to_numeric(
-                data["Risk_Score"],
+                data[risk_column],
                 errors="coerce"
             )
 
@@ -1169,26 +1211,52 @@ class SIH26170Engine:
                 risk_values.mean()
             )
 
-        if "Anomaly_Risk" in data.columns:
+        if "Anomaly_Flag" in data.columns:
 
             summary[
                 "anomaly_count"
             ] = int(
-                data["Anomaly_Risk"]
+                data["Anomaly_Flag"]
                 .fillna(False)
                 .astype(bool)
                 .sum()
             )
 
-        if "Lot_Risk" in data.columns:
+        elif "Anomaly_Risk" in data.columns:
+
+            summary[
+                "anomaly_count"
+            ] = int(
+                (
+                    pd.to_numeric(
+                        data["Anomaly_Risk"],
+                        errors="coerce"
+                    ).fillna(0)
+                    >= 0.5
+                ).sum()
+            )
+
+        lot_column = None
+        for column in (
+            "Anomaly_Lot_Risk",
+            "Lot_Risk",
+        ):
+            if column in data.columns:
+                lot_column = column
+                break
+
+        if lot_column is not None:
 
             summary[
                 "lot_anomaly_count"
             ] = int(
-                data["Lot_Risk"]
-                .fillna(False)
-                .astype(bool)
-                .sum()
+                (
+                    pd.to_numeric(
+                        data[lot_column],
+                        errors="coerce"
+                    ).fillna(0)
+                    >= 0.5
+                ).sum()
             )
 
         summary[
