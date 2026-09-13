@@ -4,6 +4,15 @@ AI-driven engineering component screening using burn-in measurement data.
 Detects latent defects, predicts 168-hour degradation and produces an
 explainable PASS / MONITOR / REVIEW / REJECT decision for every component.
 
+**Team / App:** INFINITY IQ · **Problem Statement:** SIH26170 — AI-Driven
+Anomaly Detection in Component Burn-In & Screening
+
+## Live & Links
+
+- **Live application:** https://infinity-iq.streamlit.app
+- **Project source code:** https://github.com/rkvvenu-lgtm/INFINITY-IQ-
+- **Demo video:** https://github.com/rkvvenu-lgtm/INFINITY-IQ-/blob/main/docs/demo/INFINITY-IQ_demo.mp4
+
 ## Problem → Solution Mapping (SIH26170)
 
 | Problem | Our Solution |
