@@ -11,7 +11,7 @@ Anomaly Detection in Component Burn-In & Screening
 
 - **Live application:** https://infinity-iq.streamlit.app
 - **Project source code:** https://github.com/rkvvenu-lgtm/INFINITY-IQ-
-- **Demo video:** https://github.com/rkvvenu-lgtm/INFINITY-IQ-/blob/main/docs/demo/INFINITY-IQ_demo.mp4
+- **Demo video:** https://github.com/rkvvenu-lgtm/INFINITY-IQ-/docs/demo/INFINITY-IQ_Demo.mp4
 
 ## Problem → Solution Mapping (SIH26170)
 
