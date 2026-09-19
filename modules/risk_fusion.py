@@ -392,13 +392,13 @@ class RiskFusion:
         ):
             return "REVIEW"
 
-        if score >= 0.75:
+        if score >= 0.65:
             return "REJECT"
 
-        if score >= 0.50:
+        if score >= 0.35:
             return "REVIEW"
 
-        if score >= 0.25:
+        if score >= 0.15:
             return "MONITOR"
 
         return "PASS"

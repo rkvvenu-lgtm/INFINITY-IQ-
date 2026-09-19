@@ -25,11 +25,14 @@ import time
 from datetime import datetime
 from typing import Any, Dict, Optional
 
+import numpy as np
 import pandas as pd
 import plotly.express as px
 import streamlit as st
 
 from main import SIH26170Engine
+from models.model_manager import ModelManager
+from modules.anomaly_detector import AnomalyDetector
 from modules.component_intelligence import ComponentIntelligence
 from modules.data_quality_intelligence import DataQualityIntelligence
 from modules.final_ui_integration import FinalUIIntegration
@@ -260,6 +263,7 @@ DEFAULT_STATE = {
     "generic_screening_result": None,
     "generic_screening_done": False,
     "generic_self_test_result": None,
+    "electronics_spotcheck_result": None,
 }
 
 for key, value in DEFAULT_STATE.items():
@@ -1192,7 +1196,7 @@ def render_universal_fallback_results(
 
     st.dataframe(
         component_view,
-        use_container_width=True,
+        width="stretch",
         height=360,
         hide_index=True,
     )
@@ -1206,7 +1210,7 @@ def render_universal_fallback_results(
             f"universal_screening_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
         ),
         mime="text/csv",
-        use_container_width=True,
+        width="stretch",
     )
 
 
@@ -1282,7 +1286,7 @@ def maybe_render_universal_fallback(
         "🌐 Run Universal Screening "
         "for this dataset instead",
         type="primary",
-        use_container_width=True,
+        width="stretch",
     ):
 
         with st.spinner(
@@ -1341,7 +1345,7 @@ with st.sidebar:
 
         st.image(
             APP_LOGO_PATH,
-            use_container_width=True,
+            width="stretch",
         )
 
     st.markdown(
@@ -1695,7 +1699,7 @@ elif page == "📂 Upload Data":
 
         st.dataframe(
             df.head(20),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 
@@ -1735,7 +1739,7 @@ elif page == "⚙️ Screening":
 
         if st.button(
             "⚡ Load Sample Burn-In Dataset",
-            use_container_width=True,
+            width="stretch",
         ):
 
             try:
@@ -1850,7 +1854,7 @@ elif page == "⚙️ Screening":
         if st.button(
             "🚀 Start AI Screening",
             type="primary",
-            use_container_width=True,
+            width="stretch",
         ):
 
             with st.status(
@@ -2343,7 +2347,7 @@ elif page == "📊 Results":
 
             st.plotly_chart(
                 fig,
-                use_container_width=True,
+                width="stretch",
             )
 
         # ------------------------------------------------------------
@@ -2383,7 +2387,7 @@ elif page == "📊 Results":
 
             st.dataframe(
                 prediction_summary,
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
             )
 
@@ -2397,10 +2401,558 @@ elif page == "📊 Results":
 
         st.dataframe(
             result,
-            use_container_width=True,
+            width="stretch",
             height=500,
             hide_index=True,
         )
+
+        # ------------------------------------------------------------
+        # Drift model evaluation - Training / Evaluation mode
+        # PS Module B: MAE vs 168h ground truth + safety-slope check.
+        # PS evaluation metric 1: recall / false-positive spot-check.
+        # ------------------------------------------------------------
+
+        if operating_mode == "TRAINING_EVALUATION":
+
+            st.divider()
+
+            st.markdown(
+                "### 📏 Drift Model Evaluation "
+                "(MAE vs 168h Ground Truth)"
+            )
+
+            st.caption(
+                "Compares the predicted 168h values with the "
+                "measured 168h ground-truth columns in this "
+                "dataset. Lower MAE is better."
+            )
+
+            evaluation_manager = ModelManager()
+
+            evaluation_rows = []
+            evaluation_pairs = {}
+
+            for parameter in (
+                evaluation_manager.get_enabled_parameters()
+            ):
+
+                try:
+                    target_column = (
+                        evaluation_manager.get_target_column(
+                            parameter
+                        )
+                    )
+                    prediction_column = (
+                        evaluation_manager.get_prediction_column(
+                            parameter
+                        )
+                    )
+                    display_name = (
+                        evaluation_manager.get_display_name(
+                            parameter
+                        )
+                    )
+                except Exception:
+                    continue
+
+                if (
+                    target_column not in result.columns
+                    or prediction_column not in result.columns
+                ):
+                    continue
+
+                actual = pd.to_numeric(
+                    result[target_column],
+                    errors="coerce",
+                )
+                predicted = pd.to_numeric(
+                    result[prediction_column],
+                    errors="coerce",
+                )
+
+                valid = actual.notna() & predicted.notna()
+
+                if int(valid.sum()) < 5:
+                    continue
+
+                actual_values = actual[valid].to_numpy(
+                    dtype=float
+                )
+                predicted_values = predicted[valid].to_numpy(
+                    dtype=float
+                )
+
+                errors = predicted_values - actual_values
+
+                mae = float(
+                    np.mean(np.abs(errors))
+                )
+                rmse = float(
+                    np.sqrt(np.mean(errors ** 2))
+                )
+
+                spread = np.sum(
+                    (actual_values - np.mean(actual_values)) ** 2
+                )
+
+                if spread > 0:
+                    r_squared = float(
+                        1.0
+                        - np.sum(errors ** 2)
+                        / spread
+                    )
+                else:
+                    r_squared = float("nan")
+
+                held_out_mae = None
+                selected_model = "pre-trained"
+
+                metadata_path = os.path.join(
+                    os.path.dirname(__file__),
+                    "models",
+                    "%s_early.json" % parameter,
+                )
+
+                try:
+                    if os.path.isfile(metadata_path):
+                        with open(
+                            metadata_path,
+                            encoding="utf-8",
+                        ) as metadata_file:
+                            import json as _json
+
+                            metadata = _json.load(
+                                metadata_file
+                            )
+
+                        selected_model = str(
+                            metadata.get(
+                                "model_type",
+                                selected_model,
+                            )
+                        )
+
+                        held_out_mae = (
+                            metadata.get(
+                                "validation_metrics",
+                                {},
+                            ).get("MAE")
+                        )
+                except Exception:
+                    pass
+
+                evaluation_rows.append(
+                    {
+                        "Parameter": display_name,
+                        "Model": selected_model,
+                        "Held-out MAE": (
+                            round(float(held_out_mae), 4)
+                            if held_out_mae is not None
+                            else "—"
+                        ),
+                        "Live MAE": round(mae, 4),
+                        "Live RMSE": round(rmse, 4),
+                        "Live R²": (
+                            round(r_squared, 4)
+                            if np.isfinite(r_squared)
+                            else "—"
+                        ),
+                        "Rows": int(valid.sum()),
+                    }
+                )
+
+                evaluation_pairs[display_name] = (
+                    actual_values,
+                    predicted_values,
+                )
+
+            if evaluation_rows:
+
+                st.dataframe(
+                    pd.DataFrame(evaluation_rows),
+                    width="stretch",
+                    hide_index=True,
+                )
+
+                parameter_choice = st.selectbox(
+                    "Parameter (predicted vs actual 168h)",
+                    list(evaluation_pairs.keys()),
+                    key="evaluation_parameter",
+                )
+
+                actual_values, predicted_values = (
+                    evaluation_pairs[parameter_choice]
+                )
+
+                scatter = px.scatter(
+                    x=actual_values,
+                    y=predicted_values,
+                    labels={
+                        "x": "Measured 168h (ground truth)",
+                        "y": "Predicted 168h",
+                    },
+                    title="%s: predicted vs measured 168h"
+                    % parameter_choice,
+                )
+
+                low = float(
+                    min(
+                        np.min(actual_values),
+                        np.min(predicted_values),
+                    )
+                )
+                high = float(
+                    max(
+                        np.max(actual_values),
+                        np.max(predicted_values),
+                    )
+                )
+
+                scatter.add_shape(
+                    type="line",
+                    x0=low,
+                    y0=low,
+                    x1=high,
+                    y1=high,
+                    line=dict(dash="dash"),
+                )
+
+                st.plotly_chart(
+                    scatter,
+                    width="stretch",
+                )
+
+            else:
+
+                st.info(
+                    "168h ground-truth columns are not "
+                    "available in this dataset, so live MAE "
+                    "cannot be computed."
+                )
+
+            # --------------------------------------------------------
+            # Safety-slope check (PS Module B wording).
+            # --------------------------------------------------------
+
+            st.markdown(
+                "### 🛟 Safety-Slope Check (PS Module B)"
+            )
+
+            st.caption(
+                "Safety slope = the maximum hourly drift that "
+                "still keeps a component inside its engineering "
+                "limit at 168h. Components drifting faster are "
+                "flagged for early rejection."
+            )
+
+            slope_rows = []
+            slope_breach_count = 0
+
+            for parameter in (
+                evaluation_manager.get_enabled_parameters()
+            ):
+
+                try:
+                    current_column = (
+                        evaluation_manager.get_current_column(
+                            parameter
+                        )
+                    )
+                    target_column = (
+                        evaluation_manager.get_target_column(
+                            parameter
+                        )
+                    )
+                    prediction_column = (
+                        evaluation_manager.get_prediction_column(
+                            parameter
+                        )
+                    )
+                    direction = str(
+                        evaluation_manager.get_direction(
+                            parameter
+                        )
+                    ).upper()
+                    limits = (
+                        evaluation_manager.get_engineering_limit(
+                            parameter
+                        )
+                        or {}
+                    )
+                    display_name = (
+                        evaluation_manager.get_display_name(
+                            parameter
+                        )
+                    )
+                except Exception:
+                    continue
+
+                needed = [
+                    current_column,
+                    prediction_column,
+                ]
+
+                if any(
+                    column not in result.columns
+                    for column in needed
+                ):
+                    continue
+
+                current = pd.to_numeric(
+                    result[current_column],
+                    errors="coerce",
+                )
+                predicted = pd.to_numeric(
+                    result[prediction_column],
+                    errors="coerce",
+                )
+
+                horizon = 168.0
+                predicted_slope = (
+                    predicted - current
+                ) / horizon
+
+                if direction == "LOW":
+                    bound = limits.get("min")
+                    if bound is None:
+                        continue
+                    safety_slope = (
+                        pd.to_numeric(bound, errors="coerce")
+                        - current
+                    ) / horizon
+                    breached = predicted_slope < safety_slope
+                else:
+                    bound = limits.get("max")
+                    if bound is None:
+                        continue
+                    safety_slope = (
+                        pd.to_numeric(bound, errors="coerce")
+                        - current
+                    ) / horizon
+                    if direction == "BOTH":
+                        breached = (
+                            predicted_slope.abs()
+                            > safety_slope.abs()
+                        )
+                    else:
+                        breached = (
+                            predicted_slope > safety_slope
+                        )
+
+                breached = breached.fillna(False)
+                count = int(breached.sum())
+                slope_breach_count += count
+
+                excess = (
+                    predicted_slope - safety_slope
+                ).where(breached, 0.0)
+
+                slope_rows.append(
+                    {
+                        "Parameter": display_name,
+                        "Direction": direction,
+                        "Breaching slope": count,
+                        "Worst excess/hour": (
+                            round(float(excess.max()), 6)
+                            if count
+                            else 0.0
+                        ),
+                    }
+                )
+
+            st.metric(
+                "Components breaching safety slope",
+                slope_breach_count,
+            )
+
+            if slope_rows:
+
+                st.dataframe(
+                    pd.DataFrame(slope_rows),
+                    width="stretch",
+                    hide_index=True,
+                )
+
+            # --------------------------------------------------------
+            # Electronics anomaly spot-check (recall / FPR).
+            # --------------------------------------------------------
+
+            st.markdown(
+                "### 🧪 Electronics Anomaly Spot-Check"
+            )
+
+            st.caption(
+                "Injects synthetic 6σ outliers into a copy of "
+                "this dataset and measures recall and the "
+                "clean-data false-positive rate of the "
+                "electronics anomaly detector."
+            )
+
+            if st.button(
+                "Run electronics spot-check",
+                key="run_electronics_spotcheck",
+                width="stretch",
+            ):
+
+                with st.spinner(
+                    "Injecting outliers and re-screening..."
+                ):
+
+                    try:
+                        measurement_columns = []
+
+                        for parameter in (
+                            evaluation_manager
+                            .get_enabled_parameters()
+                        ):
+                            try:
+                                measurement_columns += (
+                                    evaluation_manager
+                                    .get_early_features(
+                                        parameter
+                                    )
+                                )
+                                measurement_columns += (
+                                    evaluation_manager
+                                    .get_full_features(
+                                        parameter
+                                    )
+                                )
+                                measurement_columns.append(
+                                    evaluation_manager
+                                    .get_target_column(
+                                        parameter
+                                    )
+                                )
+                            except Exception:
+                                continue
+
+                        measurement_columns = [
+                            column
+                            for column in dict.fromkeys(
+                                measurement_columns
+                            )
+                            if column in result.columns
+                        ]
+
+                        group_columns = [
+                            column
+                            for column in (
+                                "Lot_ID",
+                                "Component_Type",
+                            )
+                            if column in result.columns
+                        ]
+
+                        spot_frame = result[
+                            measurement_columns
+                            + group_columns
+                        ].copy()
+
+                        for column in measurement_columns:
+                            spot_frame[column] = pd.to_numeric(
+                                spot_frame[column],
+                                errors="coerce",
+                            )
+
+                        clean_frame = spot_frame.dropna(
+                            subset=measurement_columns
+                        )
+
+                        if len(clean_frame) < 20:
+                            raise ValueError(
+                                "Not enough complete rows "
+                                "for a spot-check."
+                            )
+
+                        rng = np.random.default_rng(42)
+                        inject_count = min(
+                            20,
+                            max(5, len(clean_frame) // 100),
+                        )
+                        inject_index = rng.choice(
+                            clean_frame.index.to_numpy(),
+                            size=inject_count,
+                            replace=False,
+                        )
+
+                        tampered = clean_frame.copy()
+
+                        for column in measurement_columns:
+                            spread = float(
+                                tampered[column].std()
+                            )
+                            if np.isfinite(spread) and spread > 0:
+                                tampered.loc[inject_index, column] = (
+                                    tampered.loc[inject_index, column]
+                                    + 6.0 * spread
+                                )
+
+                        detector = AnomalyDetector()
+                        flagged = detector.detect(tampered)
+
+                        flags = flagged["Anomaly_Flag"].to_numpy(
+                            dtype=bool
+                        )
+                        injected_mask = flagged.index.isin(
+                            inject_index
+                        )
+
+                        recall = float(
+                            flags[injected_mask].mean()
+                        )
+                        false_positive_rate = float(
+                            flags[~injected_mask].mean()
+                        )
+
+                        st.session_state[
+                            "electronics_spotcheck_result"
+                        ] = {
+                            "injected": int(inject_count),
+                            "recall": recall,
+                            "false_positive_rate": (
+                                false_positive_rate
+                            ),
+                        }
+
+                    except Exception as error:
+
+                        st.error(
+                            "Electronics spot-check failed: "
+                            f"{error}"
+                        )
+
+            if (
+                "electronics_spotcheck_result" in st.session_state
+                and st.session_state.electronics_spotcheck_result
+            ):
+                spotcheck = (
+                    st.session_state.electronics_spotcheck_result
+                )
+            else:
+                spotcheck = None
+
+            if spotcheck:
+
+                col1, col2, col3 = st.columns(3)
+
+                with col1:
+                    st.metric(
+                        "Injected 6σ outliers",
+                        spotcheck["injected"],
+                    )
+
+                with col2:
+                    st.metric(
+                        "Recall",
+                        f"{spotcheck['recall']:.1%}",
+                    )
+
+                with col3:
+                    st.metric(
+                        "Clean-data FPR",
+                        f"{spotcheck['false_positive_rate']:.1%}",
+                    )
 
 
 # ================================================================
@@ -2625,7 +3177,7 @@ elif page == "🔎 Investigation":
 
                 st.dataframe(
                     parameter_df,
-                    use_container_width=True,
+                    width="stretch",
                     hide_index=True,
                 )
 
@@ -2693,7 +3245,7 @@ elif page == "🔎 Investigation":
 
                 st.plotly_chart(
                     fig,
-                    use_container_width=True,
+                    width="stretch",
                 )
 
             # --------------------------------------------------------
@@ -2743,7 +3295,7 @@ elif page == "🔎 Investigation":
 
                 st.dataframe(
                     evidence_df[visible_columns],
-                    use_container_width=True,
+                    width="stretch",
                     hide_index=True,
                 )
 
@@ -2932,7 +3484,7 @@ elif page == "🔎 Investigation":
                 )
                 st.dataframe(
                     latest_df,
-                    use_container_width=True,
+                    width="stretch",
                     hide_index=True,
                 )
 
@@ -2946,7 +3498,7 @@ elif page == "🔎 Investigation":
 
                 st.dataframe(
                     selected_rows.T,
-                    use_container_width=True,
+                    width="stretch",
                 )
 
                 st.markdown("**AI quantitative explanation used for this investigation:**")
@@ -3023,7 +3575,7 @@ elif page == "🌐 Universal Screening":
 
         if st.button(
             "⚡ Load Sample Generic Dataset",
-            use_container_width=True,
+            width="stretch",
         ):
 
             try:
@@ -3113,7 +3665,7 @@ elif page == "🌐 Universal Screening":
 
         st.dataframe(
             feature_frame,
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 
@@ -3143,7 +3695,7 @@ elif page == "🌐 Universal Screening":
         if st.button(
             "🚀 Run Universal Screening",
             type="primary",
-            use_container_width=True,
+            width="stretch",
         ):
 
             with st.spinner(
@@ -3286,7 +3838,7 @@ elif page == "🌐 Universal Screening":
 
                 st.plotly_chart(
                     fig,
-                    use_container_width=True,
+                    width="stretch",
                 )
 
             st.markdown(
@@ -3295,7 +3847,7 @@ elif page == "🌐 Universal Screening":
 
             st.dataframe(
                 gr,
-                use_container_width=True,
+                width="stretch",
                 height=480,
                 hide_index=True,
             )
@@ -3315,7 +3867,7 @@ elif page == "🌐 Universal Screening":
 
             st.dataframe(
                 component_view,
-                use_container_width=True,
+                width="stretch",
                 height=420,
                 hide_index=True,
             )
@@ -3329,7 +3881,7 @@ elif page == "🌐 Universal Screening":
                     f"universal_screening_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
                 ),
                 mime="text/csv",
-                use_container_width=True,
+                width="stretch",
             )
 
             st.markdown(
@@ -3343,7 +3895,7 @@ elif page == "🌐 Universal Screening":
 
             if st.button(
                 "Run Algorithm Self-Test",
-                use_container_width=True,
+                width="stretch",
             ):
 
                 with st.spinner(
@@ -3554,7 +4106,7 @@ elif page == "📥 Reports":
             if metadata_rows:
                 st.dataframe(
                     pd.DataFrame(metadata_rows),
-                    use_container_width=True,
+                    width="stretch",
                     hide_index=True,
                 )
 
@@ -3579,7 +4131,7 @@ elif page == "📥 Reports":
                     f"SIH26170_screening_{timestamp}.csv"
                 ),
                 mime="text/csv",
-                use_container_width=True,
+                width="stretch",
             )
 
             json_bytes = final_ui.export_json_bytes(
@@ -3593,7 +4145,7 @@ elif page == "📥 Reports":
                     f"SIH26170_screening_{timestamp}.json"
                 ),
                 mime="application/json",
-                use_container_width=True,
+                width="stretch",
             )
 
             try:
@@ -3615,7 +4167,7 @@ elif page == "📥 Reports":
                         "application/vnd.openxmlformats-officedocument."
                         "spreadsheetml.sheet"
                     ),
-                    use_container_width=True,
+                    width="stretch",
                 )
 
             except Exception as error:
@@ -3639,7 +4191,7 @@ elif page == "📥 Reports":
             else:
                 st.dataframe(
                     queue,
-                    use_container_width=True,
+                    width="stretch",
                     height=350,
                     hide_index=True,
                 )
