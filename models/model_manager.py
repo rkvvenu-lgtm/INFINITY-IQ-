@@ -528,6 +528,15 @@ class ModelManager:
             path,
         )
 
+        try:
+            stored_model_path = str(
+                path.relative_to(
+                    self.project_root
+                )
+            )
+        except ValueError:
+            stored_model_path = str(path)
+
         model_metadata = {
             "manager_version": (
                 self.MANAGER_VERSION
@@ -541,7 +550,7 @@ class ModelManager:
             "saved_at": (
                 datetime.now().isoformat()
             ),
-            "model_path": str(path),
+            "model_path": stored_model_path,
         }
 
         if metadata:

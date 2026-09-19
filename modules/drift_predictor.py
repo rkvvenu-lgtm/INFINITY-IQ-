@@ -519,13 +519,22 @@ class DriftPredictor:
             )
         )
 
+        try:
+            stored_path = str(
+                path.relative_to(
+                    self.model_manager.project_root
+                )
+            )
+        except ValueError:
+            stored_path = str(path)
+
         return {
             "parameter": parameter,
             "feature_set": feature_set,
             "model_name": best[
                 "model_name"
             ],
-            "model_path": str(path),
+            "model_path": stored_path,
             "features": features,
             "target": target,
             "metrics": best[

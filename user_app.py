@@ -18,7 +18,10 @@ It does not modify the AI core.
 
 from __future__ import annotations
 
+import base64
 import io
+import os
+import time
 from datetime import datetime
 from typing import Any, Dict, Optional
 
@@ -39,12 +42,141 @@ from modules.generic_screening.self_test import GenericSelfTest
 # PAGE CONFIGURATION
 # ================================================================
 
+APP_LOGO_PATH = os.path.join(
+    os.path.dirname(__file__),
+    "assets",
+    "logo.png",
+)
+
+APP_LOGO_AVAILABLE = os.path.isfile(
+    APP_LOGO_PATH
+)
+
 st.set_page_config(
     page_title="SIH26170 | Burn-In AI Screening",
-    page_icon="🔬",
+    page_icon=(
+        APP_LOGO_PATH
+        if APP_LOGO_AVAILABLE
+        else "🔬"
+    ),
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+
+# ================================================================
+# SPLASH SCREEN (5-second branded intro on first load)
+# ================================================================
+
+SPLASH_SECONDS = 5
+
+SPLASH_LOGO_PATH = os.path.join(
+    os.path.dirname(__file__),
+    "assets",
+    "logo_splash.png",
+)
+
+
+def _splash_logo_data_uri():
+    for candidate in (
+        SPLASH_LOGO_PATH,
+        APP_LOGO_PATH,
+    ):
+        if candidate and os.path.isfile(candidate):
+            with open(candidate, "rb") as handle:
+                encoded = base64.b64encode(
+                    handle.read()
+                ).decode("ascii")
+            return "data:image/png;base64," + encoded
+    return None
+
+
+def _maybe_show_splash():
+    if st.session_state["splash_done"]:
+        return
+
+    try:
+        skip = st.query_params.get("splash", "")
+    except Exception:
+        skip = ""
+
+    if str(skip) == "0":
+        st.session_state.splash_done = True
+        return
+
+    logo_uri = _splash_logo_data_uri()
+
+    logo_tag = (
+        '<img src="%s" class="splash-logo"/>' % logo_uri
+        if logo_uri
+        else '<div class="splash-title">INFINITY IQ</div>'
+    )
+
+    st.markdown(
+        """
+        <style>
+        .splash-overlay {
+            position: fixed; inset: 0; z-index: 999999;
+            display: flex; flex-direction: column;
+            align-items: center; justify-content: center;
+            background: #FFFFFF;
+        }
+        .splash-logo {
+            width: min(420px, 70vw);
+            animation: splash-in 1.6s ease-out both,
+                       splash-float 3s ease-in-out 1.8s infinite;
+            filter: drop-shadow(0 10px 30px rgba(2, 132, 199, 0.30));
+        }
+        .splash-title {
+            font-size: 54px; font-weight: 800;
+            color: #0F172A; letter-spacing: 6px;
+            animation: splash-in 1.6s ease-out both;
+        }
+        .splash-tag {
+            margin-top: 14px; font-size: 13px;
+            letter-spacing: 4px; color: #0F766E;
+            animation: splash-in 1.6s ease-out 0.3s both;
+        }
+        .splash-bar {
+            margin-top: 26px; width: min(320px, 60vw);
+            height: 4px; border-radius: 4px;
+            background: rgba(15, 23, 42, 0.12);
+            overflow: hidden;
+        }
+        .splash-bar > div {
+            height: 100%; width: 0; border-radius: 4px;
+            background: linear-gradient(90deg, #2DD4BF, #3B82F6);
+            animation: splash-load 5s linear forwards;
+        }
+        @keyframes splash-in {
+            from { opacity: 0; transform: scale(0.86); }
+            to { opacity: 1; transform: scale(1); }
+        }
+        @keyframes splash-float {
+            0%, 100% { transform: translateY(0) scale(1); }
+            50% { transform: translateY(-10px) scale(1.015); }
+        }
+        @keyframes splash-load {
+            from { width: 0; }
+            to { width: 100%; }
+        }
+        </style>
+        <div class="splash-overlay">"""
+        + logo_tag
+        + """<div class="splash-tag">COMPONENT INTELLIGENCE FOR A MORE RELIABLE TOMORROW</div><div class="splash-bar"><div></div></div></div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    time.sleep(SPLASH_SECONDS)
+    st.session_state.splash_done = True
+    st.rerun()
+
+
+if "splash_done" not in st.session_state:
+    st.session_state.splash_done = False
+
+_maybe_show_splash()
 
 
 # ================================================================
@@ -1205,6 +1337,13 @@ def maybe_render_universal_fallback(
 
 with st.sidebar:
 
+    if APP_LOGO_AVAILABLE:
+
+        st.image(
+            APP_LOGO_PATH,
+            use_container_width=True,
+        )
+
     st.markdown(
         "## 🔬 Burn-In AI"
     )
@@ -1688,15 +1827,36 @@ elif page == "⚙️ Screening":
                 "✓ Risk Fusion"
             )
 
+        retrain_models = False
+
+        if operating_mode == "TRAINING_EVALUATION":
+
+            retrain_models = st.checkbox(
+                "Retrain drift models on this dataset "
+                "(slower: refits 24 models and overwrites "
+                "the shipped model files)",
+                value=False,
+            )
+
+            if not retrain_models:
+
+                st.caption(
+                    "Evaluation uses the pre-trained drift "
+                    "models and scores predictions against "
+                    "the 168h ground truth. Tick the box "
+                    "above only to refit the models."
+                )
+
         if st.button(
             "🚀 Start AI Screening",
             type="primary",
             use_container_width=True,
         ):
 
-            with st.spinner(
-                "Running SIH26170 AI screening..."
-            ):
+            with st.status(
+                "Running SIH26170 AI screening...",
+                expanded=False,
+            ) as run_status:
 
                 try:
 
@@ -1763,6 +1923,11 @@ elif page == "⚙️ Screening":
                         get_phase1_engine()
                     )
 
+                    run_status.update(
+                        label="Screening: anomaly detection, "
+                        "168h prediction and risk fusion...",
+                    )
+
                     phase1_result = (
                         phase1_engine.run(
                             df,
@@ -1770,6 +1935,7 @@ elif page == "⚙️ Screening":
                             train_models=(
                                 operating_mode
                                 == "TRAINING_EVALUATION"
+                                and retrain_models
                             ),
                         )
                     )
@@ -1818,11 +1984,22 @@ elif page == "⚙️ Screening":
 
                     st.session_state.screening_done = True
 
+                    run_status.update(
+                        label="AI screening completed "
+                        "successfully.",
+                        state="complete",
+                    )
+
                     st.success(
                         "AI screening completed successfully."
                     )
 
                 except Exception as error:
+
+                    run_status.update(
+                        label="Screening failed.",
+                        state="error",
+                    )
 
                     st.error(
                         f"Screening failed: {error}"
